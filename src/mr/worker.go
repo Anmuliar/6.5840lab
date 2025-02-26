@@ -38,10 +38,8 @@ func ihash(key string) int {
 //
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-	fmt.Println("register")
 	workerId := registerWithCoordinator()
 	lastActivate := time.Now()
-	fmt.Println("begins")
 	for {
 		reply := callTask(workerId)
 		// fmt.Println("Get a task")
@@ -94,7 +92,6 @@ func MapTaskExecutor(info TaskReply, mapf func(string, string) []KeyValue) error
 		Files[i] = file
 		Names[i] = file.Name()
 	}
-	fmt.Println("Files created.",len(Files))
 	defer func() {
 		for _, file := range Files {
 			if file != nil {
@@ -191,7 +188,7 @@ func ReduceTaskExecutor(info TaskReply, reducef func(string, []string) string) e
 func registerWithCoordinator() int {
 	args := RegisterWorkerArgs{}
 	reply := RegisterWorkerReply{}
-	fmt.Println("begins to call")
+	// fmt.Println("begins to call")
 	ok := call("Coordinator.RegisterWorker", &args, &reply)
 	if !ok {
 		log.Fatalf("Failed to register worker")

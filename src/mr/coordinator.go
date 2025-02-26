@@ -8,7 +8,6 @@ import "net/http"
 import "time"
 import "sync"
 import "math/rand"
-import "fmt"
 
 type Task struct {
 	TaskDesc 	TaskType
@@ -46,24 +45,20 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 func (c *Coordinator) AssignRandomWorkerId() int{
-	fmt.Println("enter")
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	fmt.Println("write")
 	for {
 		workerId := rand.Intn(100000) + 1
-		fmt.Println(workerId)
+		log.Printf("No.%d worker registered.\n",workerId)
 		if !c.workerIds[workerId] {
 			c.workerIds[workerId] = true
 			return workerId
 		}
 	}
-
 	
 	return -1
 }
 func (c *Coordinator) RegisterWorker(args *RegisterWorkerArgs, reply *RegisterWorkerReply) error {
-	fmt.Println("Recieved.")
 	workerId := c.AssignRandomWorkerId()
 	reply.WorkerId = workerId
 	return nil
@@ -73,14 +68,16 @@ func (c *Coordinator) RequireTask(args *TaskArgs, reply *TaskReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.phase == MapTask {
-		for i, task := range c.mapTasks {
-			if task.TaskFlag == 0 {
-				task.TaskFlag = 1
-				task.StartTime = time.Now()
+		for i := range c.mapTasks {
+			if c.mapTasks[i].TaskFlag == 0 {
+				c.mapTasks[i].TaskFlag = 1
+				c.mapTasks[i].StartTime = time.Now()
 				
-				fmt.Println("Map task %v assigned.",i)
+				log.Printf("Map task %v assigned to %v.\n",i ,args.WorkerId)
+				
+				c.mapTasks[i].WorkerId = args.WorkerId
 				reply.TaskDesc = c.phase
-				reply.InputFile = task.InputFile
+				reply.InputFile = c.mapTasks[i].InputFile
 				reply.ReduceN = c.nReduce
 				reply.TaskId = i
 				return nil
@@ -88,19 +85,20 @@ func (c *Coordinator) RequireTask(args *TaskArgs, reply *TaskReply) error {
 		}
 
 		if c.checkAllTasksDone() {
-			fmt.Println("Enter reduce phase.")
+			log.Println("Enter reduce phase.")
 			c.phase = ReduceTask
 		} else {
 			reply.TaskDesc = NoTask
 		}
 	}
 	if c.phase == ReduceTask {
-		for i, task := range c.reduceTasks {
-			if task.TaskFlag == 0 {
-				task.TaskFlag = 1
-				task.StartTime = time.Now()
+		for i := range c.reduceTasks {
+			if c.reduceTasks[i].TaskFlag == 0 {
+				c.reduceTasks[i].TaskFlag = 1
+				c.reduceTasks[i].StartTime = time.Now()
+				c.reduceTasks[i].WorkerId = args.WorkerId
 				
-				fmt.Println("Reduce task %v assigned.",i)
+				log.Printf("Reduce task %v assigned to %v.\n",i, args.WorkerId)
 				reply.TaskDesc = c.phase
 				reply.ReduceIndex = i
 				reply.TaskId = i
@@ -213,15 +211,19 @@ func (c *Coordinator) TimeoutReseter() {
 	for {
 		time.Sleep(10 * time.Second)
 		c.mu.Lock()
-		for _, task := range c.mapTasks {
-			if (task.TaskFlag == 1 && time.Since(task.StartTime) > 10 * time.Second) {
-					task.TaskFlag = 0
+		for i := range c.mapTasks {
+			if (c.mapTasks[i].TaskFlag == 1 && time.Since(c.mapTasks[i].StartTime) > 10 * time.Second) {
+				log.Printf("Map task %v assigned to %v timeout/crashed.\n", i, c.mapTasks[i].WorkerId)		
+				c.mapTasks[i].TaskFlag = 0
+				c.mapTasks[i].WorkerId = -1
 			}
 		}
 
-		for _, task := range c.reduceTasks {
-			if (task.TaskFlag == 1 && time.Since(task.StartTime) > 10 * time.Second) {
-					task.TaskFlag = 0
+		for i := range c.reduceTasks {
+			if (c.reduceTasks[i].TaskFlag == 1 && time.Since(c.reduceTasks[i].StartTime) > 10 * time.Second) {
+				log.Printf("Reduce task %v assigned to %v timeout/crashed.\n", i, c.reduceTasks[i].WorkerId)		
+				c.reduceTasks[i].TaskFlag = 0
+				c.reduceTasks[i].WorkerId = -1
 			}
 		}
 		c.mu.Unlock()
