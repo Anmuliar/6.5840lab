@@ -50,6 +50,9 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
+type Entry struct {
+
+}
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
@@ -57,11 +60,25 @@ type Raft struct {
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
+	elect	  bool 				  // should enter election phase or not
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+	currentTerm 	int           // Latest term has seen, begins from 0
+	votedFor 		int 		  // Which leader voted for
+	log				[]Entry		  // log stored
+	isleader 		bool 
 
+	// Volatile state on all servers
+
+	commitIndex		int			  // Highest index of commited index
+	lastApplied		int			  // Highest index entry applied to state machine
+
+	// Volatile state for leaders(Since every server could be leader)
+
+	nextIndex 		[]int 		  // For each server, index of the next log entry to send
+	matchIndex		[]int 		  // For each server, highest log entry known to be replicated on server
 }
 
 // return currentTerm and whether this server
@@ -71,6 +88,8 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (2A).
+	term = rf.currentTerm
+	isleader = rf.isleader
 	return term, isleader
 }
 
@@ -128,17 +147,75 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	Term         int     // Candidate's term
+	CandidateId  int     // Candidate requesting vote
+	LastLogIndex int     // Index of candidate's last log entry
+	LastLogTerm  int     // Term of candidate's last log entry
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Term 			int		 // currentTerm for candidate updated itself
+	VoteGranted  	bool 	 // true if the candidate recieves a vote
+}
+
+// appendentries RPC 
+type AppendEntriesArgs struct {
+
+	Term 		  	int		// leader's term
+	LeaderId		int 	// redirect client request
+	PrevLogIndex 	int 	// Last Log Index
+	PrevLogTerm 	int		// term of prevlogindex
+	Entries 		[]Entry // log entries to store, pherhaps more than one
+	LeaderCommit 	int 	// leader's commit index
+}
+
+type AppendEntriesReply struct {
+
+	Term 			int 
+	Success			bool
 }
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	if rf.currentTerm > args.Term {
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+	}
+	rf.mu.Lock()
+	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
+		rf.votedFor = args.CandidateId
+		reply.VoteGranted = true
+	}
+	rf.mu.Unlock()
+	return
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+
+	if args.Term < rf.currentTerm {
+		reply.Success = false
+		reply.Term = rf.currentTerm
+		return 
+	}
+	
+	// deal with heartbeat
+	if args.Entries == nil {
+		rf.mu.Lock()
+		rf.elect = false
+		rf.currentTerm = args.Term 
+		rf.votedFor = args.LeaderId
+		rf.mu.Unlock()
+		reply.Success = true
+		reply.Term = rf.currentTerm
+		return 
+	}
+	reply.Success = true
+	reply.Term = rf.currentTerm
+	return 
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -172,7 +249,10 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
-
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply) 
+	return ok 
+}
 
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -196,7 +276,25 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	return index, term, isLeader
 }
-
+func (rf *Raft) HeartBeater() {
+	for rf.isleader == true {
+		for i := range rf.peers {
+			if i != rf.me {
+				go func(id int) {
+					args := AppendEntriesArgs {
+						Term 			: rf.currentTerm,
+						LeaderId 		: rf.me,
+					}
+					reply := AppendEntriesReply {}			
+					rf.sendAppendEntries(id, &args, &reply)
+				}(i)
+			} else {
+				rf.elect = false
+			}
+		}
+		time.Sleep(time.Duration(100) * time.Millisecond)
+	}
+}
 // the tester doesn't halt goroutines created by Raft after each test,
 // but it does call the Kill() method. your code can use killed() to
 // check whether Kill() has been called. the use of atomic avoids the
@@ -221,12 +319,58 @@ func (rf *Raft) ticker() {
 
 		// Your code here (2A)
 		// Check if a leader election should be started.
+					
+		if rf.elect == true {
+			rf.mu.Lock()
+			rf.currentTerm = rf.currentTerm + 1
+			// become candidate
+			rf.votedFor = rf.me
+			
+			voted := 1 // voted for self
+			counter := make(chan bool, len(rf.peers) - 1)
+			for i := range rf.peers {
+				if i != rf.me {
+					go func(id int) {
+						args := RequestVoteArgs {
+							Term         :rf.currentTerm,  
+							CandidateId  :rf.me,
+						}
+						reply := RequestVoteReply {}
 
-
-		// pause for a random amount of time between 50 and 350
-		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
+						ok := rf.sendRequestVote(i, &args, &reply)
+						if ok == true {
+							rf.mu.Lock()
+							counter <- reply.VoteGranted
+							rf.mu.Unlock()
+						} else {
+							counter <- false
+						}
+					}(i)
+				}
+			}
+			rf.mu.Unlock()
+			for i := 0; i < len(rf.peers) - 1; i++{
+				if <-counter {
+					voted ++
+				}
+				if voted + voted > len(rf.peers) { // check if it have become leader
+					rf.mu.Lock()
+					rf.isleader = true 
+					go rf.HeartBeater()
+					rf.mu.Unlock()
+				}
+			}
+		}
+		rf.mu.Lock()
+		rf.elect = true
+		rf.votedFor = -1
+		rf.mu.Unlock()
+		// pause for a random amount of time between 150 and 350
+		// milliseconds. Since the tester could only accept 10 
+		// times heartbeats per second
+		ms := 150 + (rand.Int63() % 150)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
+		
 	}
 }
 
