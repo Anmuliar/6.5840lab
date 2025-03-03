@@ -26,6 +26,8 @@ import (
 
 	//	"6.5840/labgob"
 	"6.5840/labrpc"
+	// "fmt"
+	"log"
 )
 
 
@@ -88,8 +90,11 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (2A).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	term = rf.currentTerm
 	isleader = rf.isleader
+	log.Printf("In term %v, id %v isleader=%v\n",term,rf.me,isleader)
 	return term, isleader
 }
 
@@ -181,25 +186,46 @@ type AppendEntriesReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	if rf.currentTerm > args.Term {
+		if rf.currentTerm > args.Term {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
+		return 
+	} else if rf.currentTerm < args.Term {
+		rf.mu.Lock()
+		rf.currentTerm = args.Term
+		rf.elect = false
+		rf.votedFor = -1
+		rf.isleader = false
+		rf.mu.Unlock()
 	}
 	rf.mu.Lock()
+	rf.elect = false
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
 		rf.votedFor = args.CandidateId
 		reply.VoteGranted = true
+	} else {
+		reply.VoteGranted = false
 	}
 	rf.mu.Unlock()
+	log.Printf("%v(%v) recieved vote request from %v(%v), voted=%v\n",rf.me,rf.currentTerm, args.CandidateId,args.Term,reply.VoteGranted)
+
 	return
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
+	log.Printf("%v(%v) recieved append entries request from %v(%v)\n",rf.me,rf.currentTerm, args.LeaderId, args.Term)	
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		reply.Term = rf.currentTerm
 		return 
+	} else if rf.currentTerm < args.Term {
+		rf.mu.Lock()
+		rf.currentTerm = args.Term
+		rf.elect = false
+		rf.votedFor = -1
+		rf.isleader = false
+		rf.mu.Unlock()
 	}
 	
 	// deal with heartbeat
@@ -277,19 +303,38 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	return index, term, isLeader
 }
 func (rf *Raft) HeartBeater() {
-	for rf.isleader == true {
-		for i := range rf.peers {
-			if i != rf.me {
-				go func(id int) {
-					args := AppendEntriesArgs {
-						Term 			: rf.currentTerm,
-						LeaderId 		: rf.me,
-					}
-					reply := AppendEntriesReply {}			
-					rf.sendAppendEntries(id, &args, &reply)
-				}(i)
-			} else {
-				rf.elect = false
+	for rf.killed() == false {
+		if rf.isleader == true {
+			followers := make(chan bool, len(rf.peers) - 1)
+			for i := range rf.peers {
+				if i != rf.me {
+					go func(id int) {
+						args := AppendEntriesArgs {
+							Term 			: rf.currentTerm,
+							LeaderId 		: rf.me,
+						}
+						reply := AppendEntriesReply {}			
+						if rf.sendAppendEntries(id, &args, &reply) {
+							followers <- reply.Success
+						} else {
+							followers <- false
+						}
+					}(i)
+				} else {
+					rf.elect = false
+				}
+			}
+			counts := 1
+			for i := 0; i < len(rf.peers) - 1; i++ {
+				if (<-followers) == true {
+					counts ++
+				}
+			}
+			if counts + counts < len(rf.peers) {
+				rf.mu.Lock()
+				rf.isleader = false
+				log.Printf("%v have no enough followers.\n",rf.me)
+				rf.mu.Unlock()
 			}
 		}
 		time.Sleep(time.Duration(100) * time.Millisecond)
@@ -306,12 +351,68 @@ func (rf *Raft) HeartBeater() {
 // should call killed() to check whether it should stop.
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
+	
 	// Your code here, if desired.
 }
 
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
+}
+func (rf *Raft) election() {
+	rf.mu.Lock()
+	rf.currentTerm = rf.currentTerm + 1
+	// become candidate
+	rf.votedFor = rf.me
+	rf.isleader = false
+	rf.mu.Unlock()
+	ms := 150 + (rand.Int63() % 150)
+	electionTimer := time.NewTimer(time.Duration(ms) * time.Millisecond)
+	voted := 1 // voted for self
+	counter := make(chan bool, len(rf.peers) - 1)
+	log.Printf("%v in term %v invoke election.",rf.me,rf.currentTerm)
+	for i := range rf.peers {
+		if i != rf.me {
+			go func(id int) {
+				args := RequestVoteArgs {
+					Term         :rf.currentTerm,  
+					CandidateId  :rf.me,
+				}
+				reply := RequestVoteReply {}
+
+				ok := rf.sendRequestVote(id, &args, &reply)
+				if ok == true {
+					rf.mu.Lock()
+					log.Printf("%v found %v well.\n",rf.me, id)
+					counter <- reply.VoteGranted
+					rf.mu.Unlock()
+				} else {
+					log.Printf("%v fail to find %v\n",rf.me, id)
+					counter <- false
+				}
+			}(i)
+		}
+	}
+	
+	for i := 0; i < len(rf.peers) - 1; i++{
+		select {
+		case result := <- counter:
+			if result == true {
+				voted ++
+				if voted + voted > len(rf.peers) && rf.elect == true { // check if it have become leader
+					rf.mu.Lock()
+					rf.isleader = true 
+					log.Printf("%v in term %v recieved %v votes\n",rf.me, rf.currentTerm, voted)
+					rf.mu.Unlock()
+					return 
+				}
+			}
+		case <-electionTimer.C:
+			return
+		}
+		
+	}
+	log.Printf("%v in term %v, election ends.",rf.me,rf.currentTerm)
 }
 
 func (rf *Raft) ticker() {
@@ -321,49 +422,10 @@ func (rf *Raft) ticker() {
 		// Check if a leader election should be started.
 					
 		if rf.elect == true {
-			rf.mu.Lock()
-			rf.currentTerm = rf.currentTerm + 1
-			// become candidate
-			rf.votedFor = rf.me
-			
-			voted := 1 // voted for self
-			counter := make(chan bool, len(rf.peers) - 1)
-			for i := range rf.peers {
-				if i != rf.me {
-					go func(id int) {
-						args := RequestVoteArgs {
-							Term         :rf.currentTerm,  
-							CandidateId  :rf.me,
-						}
-						reply := RequestVoteReply {}
-
-						ok := rf.sendRequestVote(i, &args, &reply)
-						if ok == true {
-							rf.mu.Lock()
-							counter <- reply.VoteGranted
-							rf.mu.Unlock()
-						} else {
-							counter <- false
-						}
-					}(i)
-				}
-			}
-			rf.mu.Unlock()
-			for i := 0; i < len(rf.peers) - 1; i++{
-				if <-counter {
-					voted ++
-				}
-				if voted + voted > len(rf.peers) { // check if it have become leader
-					rf.mu.Lock()
-					rf.isleader = true 
-					go rf.HeartBeater()
-					rf.mu.Unlock()
-				}
-			}
+			rf.election()
 		}
 		rf.mu.Lock()
 		rf.elect = true
-		rf.votedFor = -1
 		rf.mu.Unlock()
 		// pause for a random amount of time between 150 and 350
 		// milliseconds. Since the tester could only accept 10 
@@ -395,7 +457,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+	
 	// start ticker goroutine to start elections
+	go rf.HeartBeater()
 	go rf.ticker()
 
 
