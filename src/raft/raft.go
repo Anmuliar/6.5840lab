@@ -18,16 +18,16 @@ package raft
 //
 
 import (
-	//	"bytes"
+	"bytes"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	//	"6.5840/labgob"
+	"6.5840/labgob"
 	"6.5840/labrpc"
 	// "fmt"
-	"log"
+	// "log"
 )
 
 
@@ -98,7 +98,7 @@ func (rf *Raft) GetState() (int, bool) {
 	defer rf.mu.Unlock()
 	term = rf.currentTerm
 	isleader = rf.isleader
-	log.Printf("In term %v, id %v isleader=%v\n",term,rf.me,isleader)
+	// log.Printf("In term %v, id %v isleader=%v\n",term,rf.me,isleader)
 	return term, isleader
 }
 
@@ -118,6 +118,14 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// raftstate := w.Bytes()
 	// rf.persister.Save(raftstate, nil)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+
+	e.Encode(rf.votedFor)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.log)
+	raftstate := w.Bytes()
+	rf.persister.Save(raftstate, nil)
 }
 
 
@@ -139,6 +147,25 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+	if data == nil || len(data) < 1 {
+		return 
+	}
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	var currentTerm int 
+	var votedFor int 
+	var log []Entry 
+	
+	if d.Decode(&currentTerm) != nil ||
+	   d.Decode(&votedFor) != nil ||
+	   d.Decode(&log) != nil {
+
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.log = log
+	}
 }
 
 
@@ -200,6 +227,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.elect = false
 		rf.votedFor = -1
 		rf.isleader = false
+		rf.persist()
 		rf.mu.Unlock()
 	}
 	rf.mu.Lock()
@@ -208,12 +236,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId ){
 		if (args.LastLogIndex > len(rf.log) - 1 || len(rf.log) == 0) && rf.log[len(rf.log)-1].Term <= args.LastLogTerm {
 			rf.votedFor = args.CandidateId
+			rf.persist()
 			reply.VoteGranted = true
 		} else if (args.LastLogIndex < len(rf.log) - 1) && rf.log[len(rf.log)-1].Term >= args.LastLogTerm {
 			reply.VoteGranted = false
 		} else {
 			if rf.log[len(rf.log) - 1].Term <= args.LastLogTerm {
 				rf.votedFor = args.CandidateId
+				rf.persist()
 				reply.VoteGranted = true
 			}
 		}
@@ -240,6 +270,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.elect = false
 		rf.votedFor = -1
 		rf.isleader = false
+		rf.persist()
 		rf.mu.Unlock()
 	}
 	
@@ -247,8 +278,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.mu.Lock()
 	rf.elect = false
-	rf.currentTerm = args.Term 
-	rf.votedFor = args.LeaderId
+	// rf.currentTerm = args.Term 
+	// rf.votedFor = args.LeaderId
 	rf.mu.Unlock()
 
 	if args.PrevLogIndex >= len(rf.log){
@@ -262,6 +293,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.log = rf.log[:args.PrevLogIndex]
 		reply.Success = false
 		reply.Term = rf.currentTerm
+		rf.persist()
 		rf.mu.Unlock()
 		return 
 	} else {
@@ -271,6 +303,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		for _, entry := range args.Entries {
 			rf.log = append(rf.log, entry)
 		}
+		rf.persist()
 		if args.LeaderCommit > rf.commitIndex {
 			if args.LeaderCommit > len(rf.log) - 1{
 				rf.commitIndex = len(rf.log) - 1
@@ -352,7 +385,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Index:   len(rf.log),
 	}
 	rf.log = append(rf.log, entry)
-	log.Printf("Command %v in Index %v recieved.", command, len(rf.log) - 1)
+	rf.persist()
+	// log.Printf("Command %v in Index %v recieved.", command, len(rf.log) - 1)
 	go rf.replicateLog()
 	// Your code here (2B).
 	return len(rf.log) - 1, rf.currentTerm, true
@@ -375,7 +409,7 @@ func (rf *Raft) replicateLog() {
 				for !rf.killed() && sendingTerm == rf.currentTerm{
 					rf.mu.Lock()
 					if rf.isleader == false {
-						log.Printf("%v no longer a leader, replicated ends.",rf.me)
+						// log.Printf("%v no longer a leader, replicated ends.",rf.me)
 						rf.mu.Unlock()
 						return 
 					}
@@ -386,7 +420,7 @@ func (rf *Raft) replicateLog() {
 					if prevLogIndex >= 0 && prevLogIndex < len(rf.log) {
 						prevLogTerm = rf.log[prevLogIndex].Term
 					}
-					log.Printf("%v", nextIndex)
+					// log.Printf("%v", nextIndex)
 					entries := make([]Entry, 0)
 					if nextIndex < len(rf.log) {
 						entries = rf.log[nextIndex:]
@@ -406,7 +440,7 @@ func (rf *Raft) replicateLog() {
 					
 					if rf.sendAppendEntries(Id, &args, &reply) {
 						rf.mu.Lock()
-						log.Printf("peer %v reply %v\n",Id, reply)
+						// log.Printf("peer %v reply %v\n",Id, reply)
 						if reply.Success {
 							rf.nextIndex[Id] = nextIndex + len(entries)
 							rf.matchIndex[Id] = rf.nextIndex[Id] - 1
@@ -420,6 +454,7 @@ func (rf *Raft) replicateLog() {
 								rf.elect = false
 								rf.votedFor = -1
 								rf.isleader = false
+								rf.persist()
 								rf.mu.Unlock()
 								return 
 							}
@@ -443,7 +478,7 @@ func (rf *Raft) tryCommitLogs() {
 		if rf.log[index].Term != rf.currentTerm {
 			continue
 		}
-		log.Printf("Index %v",index)
+		// log.Printf("Index %v",index)
 		count := 1
 
 		for peer := range rf.peers {
@@ -451,7 +486,7 @@ func (rf *Raft) tryCommitLogs() {
 				count ++
 			}
 		}
-		log.Printf("Commited Vote %v", count)
+		// log.Printf("Commited Vote %v", count)
 		if count + count > len(rf.peers) {
 			rf.commitIndex = index
 			go rf.applyComd()
@@ -467,7 +502,7 @@ func (rf *Raft) applyComd() {
 	prelast := rf.lastApplied + 1
 	entries := make([]Entry, rf.commitIndex - rf.lastApplied)
 	copy(entries, rf.log[rf.lastApplied + 1 : rf.commitIndex + 1])
-	log.Printf("entries to be commited:%v on %v\n",entries,rf.me)
+	// log.Printf("entries to be commited:%v on %v\n",entries,rf.me)
 	rf.mu.Unlock()
 
 	for i, entry := range entries {
@@ -497,7 +532,7 @@ func (rf *Raft) sendHeartbeats() {
 	}
 	currentTerm := rf.currentTerm
 	rf.mu.Unlock()
-	log.Printf("%v begins beat.", rf.me)
+	// log.Printf("%v begins beat.", rf.me)
 	followers := make(chan bool, len(rf.peers) - 1)
 	timer := time.NewTimer(100 * time.Millisecond)
 	defer timer.Stop()
@@ -542,7 +577,8 @@ func (rf *Raft) sendHeartbeats() {
 			if counts + counts <= len(rf.peers) {
 				rf.isleader = false
 				rf.votedFor = -1
-				log.Printf("%v have no enough followers.\n",rf.me)
+				rf.persist()
+				// log.Printf("%v have no enough followers.\n",rf.me)
 			}
 			rf.mu.Unlock()
 			return 
@@ -552,6 +588,8 @@ func (rf *Raft) sendHeartbeats() {
 	if counts + counts <= len(rf.peers) {
 		rf.isleader = false
 		rf.votedFor = -1
+		rf.persist()
+		// log.Printf("%v have no enough followers.\n",rf.me)
 	}
 	rf.mu.Unlock()
 }
@@ -580,12 +618,13 @@ func (rf *Raft) election() {
 	// become candidate
 	rf.votedFor = rf.me
 	rf.isleader = false
+	rf.persist()
 	rf.mu.Unlock()
 	ms := 150 + (rand.Int63() % 150)
 	electionTimer := time.NewTimer(time.Duration(ms) * time.Millisecond)
 	voted := 1 // voted for self
 	counter := make(chan bool, len(rf.peers) - 1)
-	log.Printf("%v in term %v invoke election.",rf.me,rf.currentTerm)
+	// log.Printf("%v in term %v invoke election.",rf.me,rf.currentTerm)
 	for i := range rf.peers {
 		if i != rf.me {
 			go func(id int) {
@@ -629,7 +668,7 @@ func (rf *Raft) election() {
 						rf.nextIndex[t] = len(rf.log)
 						rf.matchIndex[t] = -1
 					}
-					log.Printf("%v in term %v recieved %v votes\n",rf.me, rf.currentTerm, voted)
+					// log.Printf("%v in term %v recieved %v votes\n",rf.me, rf.currentTerm, voted)
 					rf.mu.Unlock()
 					return 
 				}
@@ -639,7 +678,7 @@ func (rf *Raft) election() {
 		}
 		
 	}
-	log.Printf("%v in term %v, election ends.",rf.me,rf.currentTerm)
+	// log.Printf("%v in term %v, election ends.",rf.me,rf.currentTerm)
 }
 
 func (rf *Raft) ticker() {
@@ -648,7 +687,7 @@ func (rf *Raft) ticker() {
 		// Your code here (2A)
 		// Check if a leader election should be started.
 					
-		if rf.elect == true {
+		if rf.elect == true && rf.isleader == false {
 			rf.election()
 		}
 		rf.mu.Lock()
