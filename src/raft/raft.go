@@ -209,7 +209,23 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.mu.Unlock()
 }
 
+// InstallSnapshot RPC arguments
+type InstallSnapshotArgs struct {
 
+	Term 				int
+	LeaderId			int
+	LastIncludedIndex	int
+	LastIncludedTerm 	int
+	data				[]byte
+}
+
+type InstallSnapshotReply struct {
+	Term 				int
+}
+
+func(rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	return 
+}
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 type RequestVoteArgs struct {
@@ -405,6 +421,11 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply) 
 	return ok 
 }
+func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
+	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
+	return ok
+}
+
 
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
