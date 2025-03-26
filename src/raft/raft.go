@@ -51,6 +51,7 @@ type ApplyMsg struct {
 	SnapshotTerm  int
 	SnapshotIndex int
 }
+type applySignal struct {}
 
 type Entry struct {
 	Command 	 interface{}
@@ -66,7 +67,11 @@ type Raft struct {
 	dead      int32               // set by Kill()
 	elect	  bool 				  // should enter election phase or not
 	applyCh   chan ApplyMsg
+	applySignalCh chan applySignal
 	randomElectionTimeout int64
+	applierCond 	*sync.Cond
+	applierActive 	bool
+
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -417,6 +422,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			} else {
 				rf.commitIndex = args.LeaderCommit
 			}
+			// rf.applierCond.Signal()
 			go rf.applyComd()
 		}
 		rf.mu.Unlock()
@@ -636,6 +642,7 @@ func (rf *Raft) tryCommitLogs() {
 			
 			rf.commitIndex = index
 
+			// rf.applierCond.Signal()
 			go rf.applyComd()
 		}
 	}
@@ -661,6 +668,15 @@ func (rf *Raft) applySnap() {
 	rf.mu.Unlock()
 }
 func (rf *Raft) applyComd() {
+	rf.applySignalCh <- applySignal{}
+}
+func (rf *Raft) applierLoop () {
+	for !rf.killed() {
+		<-rf.applySignalCh
+		rf.applyComdFunc()
+	}
+}
+func (rf *Raft) applyComdFunc() {
 	if rf.lastApplied >= rf.commitIndex {
 		return 
 	}
@@ -678,7 +694,7 @@ func (rf *Raft) applyComd() {
 	copy(entries, rf.log[index1 : index2])
 	rf.lastApplied = newlast 
 	rf.mu.Unlock()
-
+	// successfulapplied := prelast - 1
 	for i, entry := range entries {
 		msg := ApplyMsg{
 			CommandValid: true,
@@ -687,8 +703,8 @@ func (rf *Raft) applyComd() {
 		}
 		DPrintf("ID:%v msg to be applied:%v",applytaskid,msg)
 		rf.applyCh <- msg
+		// successfulapplied = prelast + i
 	}
-
 	// DPrintf("%v %v %v\n", rf.me, rf.commitIndex, rf.lastApplied)
 }
 func (rf *Raft) HeartBeater() {
@@ -857,7 +873,63 @@ func (rf *Raft) ticker() {
 		
 	}
 }
+func (rf *Raft) applyEntries() {
+	if rf.lastApplied < rf.lastIncludedIndex {
+        snapshot := rf.snapshot
+        snapshotTerm := rf.lastIncludedTerm
+        snapshotIndex := rf.lastIncludedIndex
+        rf.mu.Unlock()
+        
+        msg := ApplyMsg {
+            SnapshotValid: true,
+            Snapshot: snapshot,
+            SnapshotTerm: snapshotTerm,
+            SnapshotIndex: snapshotIndex,
+        }
+        
+        // Try to send the snapshot
+        rf.applyCh <- msg
+        
+        // Update lastApplied after successful application
+        rf.mu.Lock()
+        if rf.lastApplied < snapshotIndex {
+            rf.lastApplied = snapshotIndex
+        }
+        if rf.commitIndex < snapshotIndex {
+            rf.commitIndex = snapshotIndex
+        }
+    }
 
+	newlast := rf.commitIndex
+	prelast := rf.lastApplied + 1
+
+	entries := make([]ApplyMsg, 0)
+	for i := prelast; i <= newlast; i++ {
+		rank, entry := rf.GetEntry(i)
+		if rank >= 0 && rank < len(rf.log) {
+			msg := ApplyMsg{
+				CommandValid	: true,
+				Command			: entry.Command,
+				CommandIndex	: i,
+			}
+			entries = append(entries, msg)
+		}
+	}
+	applytaskid := rand.Int63()
+	DPrintf("ID:%v entries from %v - %v to be commited on %v\n",applytaskid, rf.lastApplied + 1, rf.commitIndex + 1,rf.me)
+	rf.mu.Unlock()
+
+	lastSuccessfulIndex := rf.lastApplied
+	for _, msg := range entries {
+		DPrintf("ID:%v msg to be applied:%v on %v",applytaskid,msg,rf.me)
+		rf.applyCh <- msg
+		lastSuccessfulIndex = msg.CommandIndex
+	}
+	rf.mu.Lock()
+	if lastSuccessfulIndex > rf.lastApplied {
+        rf.lastApplied = lastSuccessfulIndex
+    }
+}
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
@@ -883,6 +955,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.randomElectionTimeout = 150 + (rand.Int63() % 150)
 	rf.lastIncludedIndex = -1
 	rf.lastIncludedTerm = -1
+	rf.applierCond = sync.NewCond(&rf.mu)
+	rf.applierActive = false
+	rf.applySignalCh = make(chan applySignal)
 	// Your initialization code here (2A, 2B, 2C).
 
 	// initialize from state persisted before a crash
@@ -892,6 +967,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// start ticker goroutine to start elections
 	go rf.HeartBeater()
 	go rf.ticker()
+	go rf.applierLoop()
 
 
 	return rf
