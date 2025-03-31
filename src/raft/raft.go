@@ -26,7 +26,7 @@ import (
 
 	"6.5840/labgob"
 	"6.5840/labrpc"
-	// "fmt"
+	"log"
 	// "./util"
 )
 
@@ -80,6 +80,7 @@ type Raft struct {
 	votedFor 		int 		  // Which leader voted for
 	log				[]Entry		  // log stored
 	isleader 		bool 
+	leaderId		int
 	lastIncludedIndex 		int
 	lastIncludedTerm 		int
 	snapshot 		[]byte
@@ -109,6 +110,18 @@ func (rf *Raft) GetState() (int, bool) {
 	isleader = rf.isleader
 	DPrintf("In term %v, id %v isleader=%v\n",term,rf.me,isleader)
 	return term, isleader
+}
+func (rf *Raft) GetLeader() int {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	log.Printf("%v %v %v",rf.isleader, rf.me, rf.leaderId)
+	if rf.isleader {
+		return rf.me
+	}
+	if rf.leaderId != rf.me {
+		return rf.leaderId
+	}
+	return (rf.leaderId + 1) % len(rf.peers)
 }
 func (rf *Raft) GetEntry(index int) (int, Entry) {
 	rank := index - rf.lastIncludedIndex - 1
@@ -371,6 +384,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.mu.Lock()
 	rf.elect = false
+	rf.leaderId = args.LeaderId
 	// rf.currentTerm = args.Term 
 	// rf.votedFor = args.LeaderId
 	rf.mu.Unlock()
@@ -952,6 +966,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.log = append(rf.log, Entry{})
 	rf.commitIndex = 0
 	rf.lastApplied = 0
+	rf.leaderId = -1
 	rf.randomElectionTimeout = 150 + (rand.Int63() % 150)
 	rf.lastIncludedIndex = -1
 	rf.lastIncludedTerm = -1
