@@ -273,10 +273,12 @@ func(rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshot
 	rf.lastIncludedTerm = args.LastIncludedTerm
 	if entry.Term == args.LastIncludedTerm && rank < len(rf.log){
 		rf.log = rf.log[rank + 1:]
+		rf.persist(276)
 		rf.mu.Unlock()	
 		return 
 	}
 	rf.log = rf.log[len(rf.log):]
+	rf.persist(281)
 	rf.mu.Unlock()
 	rf.applySnap()
 	return 

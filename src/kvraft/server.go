@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"bytes"
 )
 
 const Debug = false
@@ -46,8 +47,9 @@ type KVServer struct {
 	rf      *raft.Raft
 	applyCh chan raft.ApplyMsg
 	dead    int32 // set by Kill()
-
+	lastApplied 	int
 	maxraftstate int // snapshot if log grows this big
+	persister *raft.Persister
 
 	// Your definitions here.
 	data 		map[string]string
@@ -55,7 +57,48 @@ type KVServer struct {
 	waitCh      map[int]chan OpResult
 	
 }
+func(kv *KVServer) Snapshot() {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 
+	// snapshot := make(map[string]interface{})
+	// snapshot["data"] = kv.data
+	// snapshot["clientReq"] = kv.clientReq
+	// snapshot["index" ] = kv.lastApplied
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(kv.data)
+	e.Encode(kv.clientReq)
+	e.Encode(kv.lastApplied)
+
+	kv.rf.Snapshot(kv.lastApplied, w.Bytes())
+}
+
+func(kv *KVServer) InstallSnapshot(snapshot []byte) {
+	if len(snapshot) == 0 {
+		return 
+	}
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	r := bytes.NewBuffer(snapshot)
+	d := labgob.NewDecoder(r)
+	var data 			map[string]string
+	var clientReq 		map[int64]int
+	var lastApplied 	int
+
+	if d.Decode(&data) != nil ||
+	   d.Decode(&clientReq) != nil ||
+	   d.Decode(&lastApplied) != nil {
+		// log.Printf("Failed to decode the snapshot")
+	} else {
+		kv.data = data
+		kv.clientReq = clientReq
+		kv.lastApplied = lastApplied
+	}
+	DPrintf("server %v recovered statemachine snapshot %v %v %v", kv.me, kv.data, kv.clientReq, kv.lastApplied)
+}
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	op := Op{
@@ -65,6 +108,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		SeqNum: 	args.SeqNum,
 	}
 	index, _, isLeader := kv.rf.Start(op)
+	
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		reply.LeaderId = -1
@@ -109,9 +153,10 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	if !isLeader {
 		reply.Err = ErrWrongLeader 
 		reply.LeaderId = -1
-		log.Printf("return!")
+		// log.Printf("return!")
 		return 
 	}
+
 	ch := make(chan OpResult, 1)
 	kv.mu.Lock()
 	kv.waitCh[index] = ch
@@ -138,7 +183,10 @@ func (kv *KVServer) applier() {
 	for !kv.killed() {
 		select {
 		case msg := <- kv.applyCh:
-			log.Printf("%v recieve msg %v from raft", kv.me, msg)
+			// log.Printf("%v recieve msg %v from raft", kv.me, msg)
+			if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
+				kv.Snapshot()
+			}
 			if msg.CommandValid {
 				kv.mu.Lock()
 				op := msg.Command.(Op)
@@ -159,6 +207,9 @@ func (kv *KVServer) applier() {
 					}
 					kv.clientReq[op.ClientId] = op.SeqNum
 				}
+				if msg.CommandIndex > kv.lastApplied {
+					kv.lastApplied = msg.CommandIndex
+				}
 				ch, ok := kv.waitCh[msg.CommandIndex]
 				if ok {
 					_, isLeader := kv.rf.GetState()
@@ -169,6 +220,10 @@ func (kv *KVServer) applier() {
 					ch <- result
 				}
 				kv.mu.Unlock()
+			}
+			if msg.SnapshotValid {
+				kv.InstallSnapshot(msg.Snapshot)
+				continue
 			}
 		}
 	}
@@ -212,7 +267,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv := new(KVServer)
 	kv.me = me
-	log.Printf("server %v created.",kv.me)
+	// log.Printf("server %v created.",kv.me)
 	kv.maxraftstate = maxraftstate
 
 	// You may need initialization code here.
@@ -222,6 +277,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 
 	kv.applyCh = make(chan raft.ApplyMsg)
+	kv.persister = persister
+	kv.InstallSnapshot(persister.ReadSnapshot())
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	// You may need initialization code here.
 	go kv.applier()

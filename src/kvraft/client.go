@@ -4,7 +4,7 @@ import "6.5840/labrpc"
 import "crypto/rand"
 import "math/big"
 import "time"
-import "log"
+// import "log"
 
 type Clerk struct {
 	servers 	[]*labrpc.ClientEnd
@@ -52,7 +52,7 @@ func (ck *Clerk) Get(key string) string {
 	}
 	for  {
 		reply := GetReply{}
-		log.Printf("client %v request to Get to server %v\n",ck.clientId, ck.leaderId)
+		// log.Printf("client %v request to Get to server %v\n",ck.clientId, ck.leaderId)
 		ok := ck.servers[ck.leaderId].Call("KVServer.Get", &args, &reply)
 
 		if !ok || reply.Err == ErrWrongLeader {
@@ -66,7 +66,7 @@ func (ck *Clerk) Get(key string) string {
 		}
 
 		if reply.Err == OK {
-			log.Printf("Value on key %v is %v", key, reply.Value)
+			// log.Printf("Value on key %v is %v", key, reply.Value)
 			return reply.Value
 		}
 	}
@@ -95,9 +95,9 @@ func (ck *Clerk) PutAppend(key string, value string, op OpType) {
 	for {
 		reply := PutAppendReply{}
 
-		log.Printf("client %v request to Put/Append to server %v, args:%v\n",ck.clientId, ck.leaderId, args)
+		// log.Printf("client %v request to Put/Append to server %v, args:%v\n",ck.clientId, ck.leaderId, args)
 		ok := ck.servers[ck.leaderId].Call("KVServer.PutAppend", &args, &reply)
-		log.Printf("%v %v %v",ok, reply, args)
+		// log.Printf("%v %v %v",ok, reply, args)
 		if !ok || reply.Err == ErrWrongLeader {
 			if ok && reply.LeaderId != -1 {
 				ck.leaderId = reply.LeaderId 
