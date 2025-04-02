@@ -1,5 +1,5 @@
 package shardctrler
-
+import "log"
 //
 // Shard controler: assigns shards to replication groups.
 //
@@ -28,46 +28,128 @@ type Config struct {
 	Groups map[int][]string // gid -> servers[]
 }
 
+func (config *Config) ShardBalance() {
+	GroupNum := len(config.Groups)
+	log.Printf("before:%v",config)
+	if GroupNum == 0 {
+		return 
+	}
+	shardsize := int(10 / GroupNum)
+	extrashard :=  10 % GroupNum
+	for gid, _ := range config.Groups {
+		ShardAssigned := 0
+		for shard := range config.Shards {
+			if config.Shards[shard] == gid {
+				if extrashard > 0 {
+					if ShardAssigned >= shardsize + 1{
+						config.Shards[shard] = 0
+					} else {
+						ShardAssigned ++
+					}
+				} else {
+					if ShardAssigned >= shardsize {
+						config.Shards[shard] = 0
+					} else {
+						ShardAssigned ++
+					}
+				}
+			}
+		}
+		if ShardAssigned == shardsize + 1{
+			extrashard --
+		}
+	}
+	log.Printf("remove:%v",config)
+	for gid, _ := range config.Groups {
+		ShardAssigned := 0
+		for shard := range config.Shards {
+			if config.Shards[shard] == gid {
+				ShardAssigned ++
+			}
+		}
+		if ShardAssigned == shardsize + 1{
+			continue
+		} 
+		for shard := range config.Shards {
+			if config.Shards[shard] == 0 {
+				if extrashard > 0 {
+					if ShardAssigned < shardsize + 1 {
+						ShardAssigned ++
+						config.Shards[shard]= gid
+					}
+				} else {
+					if ShardAssigned < shardsize {
+						ShardAssigned ++
+						config.Shards[shard] = gid
+					}
+				}
+			}
+		}
+		if ShardAssigned == shardsize + 1{
+			extrashard --
+		}
+	}
+	log.Printf("final:%v",config)
+}
+type OpType int 
 const (
-	OK = "OK"
+	JoinOp 		OpType = 0
+	LeaveOp		OpType = 1
+	MoveOp		OpType = 2
+	QueryOp		OpType = 3
 )
+const (
+	OK             = "OK"
+	ErrNoKey       = "ErrNoKey"
+	ErrWrongLeader = "ErrWrongLeader"
+	ErrTimeout 	   = "ErrTimeout"
+)
+
 
 type Err string
 
 type JoinArgs struct {
-	Servers map[int][]string // new GID -> servers mappings
+	Servers 	map[int][]string // new GID -> servers mappings
+	ClientId 	int64
+	SeqNum		int
 }
 
 type JoinReply struct {
-	WrongLeader bool
 	Err         Err
+	LeaderId 	int
 }
 
 type LeaveArgs struct {
-	GIDs []int
+	GIDs 		[]int
+	ClientId	int64
+	SeqNum		int
 }
 
 type LeaveReply struct {
-	WrongLeader bool
 	Err         Err
+	LeaderId 	int
 }
 
 type MoveArgs struct {
 	Shard int
 	GID   int
+	ClientId 	int64
+	SeqNum		int
 }
 
 type MoveReply struct {
-	WrongLeader bool
 	Err         Err
+	LeaderId 	int
 }
 
 type QueryArgs struct {
 	Num int // desired config number
+	ClientId 	int64
+	SeqNum		int
 }
 
 type QueryReply struct {
-	WrongLeader bool
 	Err         Err
+	LeaderId 	int
 	Config      Config
 }
