@@ -7,7 +7,7 @@ import "sync"
 import "sync/atomic"
 import "6.5840/labgob"
 import "time"
-import "log"
+// import "log"
 
 type ShardCtrler struct {
 	mu      sync.Mutex
@@ -43,7 +43,7 @@ type OpResult struct {
 }
 func (sc *ShardCtrler) Submit(op Op) (Err, int, Config) {
 
-	log.Printf("Submitting op %v",op)
+	// log.Printf("Submitting op %v",op)
 	index, _, isLeader := sc.rf.Start(op)
 	if !isLeader {
 		return ErrWrongLeader, -1, Config{}
@@ -147,8 +147,7 @@ func (sc *ShardCtrler) applier() {
 							newConfig.Groups[gid] = servers
 						}
 						// Assign shards to new groups
-						log.Printf("NewConfig: %v",newConfig)
-						newConfig.ShardBalance()
+						// log.Printf("NewConfig: %v",newConfig)
 						sc.configs = append(sc.configs, newConfig)
 						sc.clientReq[op.ClientId] = op.SeqNum
 					case LeaveOp:
@@ -182,8 +181,8 @@ func (sc *ShardCtrler) applier() {
 						}
 						
 						// Balance remaining shards
-						log.Printf("NewConfig: %v",newConfig)
-						newConfig.ShardBalance()
+						// log.Printf("NewConfig: %v",newConfig)
+						// newConfig.ShardBalance()
 						sc.configs = append(sc.configs, newConfig)
 						sc.clientReq[op.ClientId] = op.SeqNum
 					case MoveOp:
@@ -193,14 +192,18 @@ func (sc *ShardCtrler) applier() {
 							Groups: sc.configs[len(sc.configs)-1].Groups,
 						}
 						newConfig.Shards[op.Int1] = op.Int2
-						log.Printf("NewConfig: %v",newConfig)
+						// log.Printf("NewConfig: %v",newConfig)
 						sc.configs = append(sc.configs, newConfig)
 						sc.clientReq[op.ClientId] = op.SeqNum
 					case QueryOp:
 						if op.Int1 > len(sc.configs) {
 							result.Err = ErrNoKey
 						}
+						
 						result.Value = sc.configs[(op.Int1 + len(sc.configs)) % len(sc.configs)]
+						// log.Printf("In server %v: the No.%v config before balance is %v", sc.me, op.Int1, result.Value)
+						result.Value.ShardBalance()
+						// log.Printf("In server %v: the No.%v config after balance is %v", sc.me, op.Int1, result.Value)
 					}
 				}
 				ch, ok := sc.waitCh[msg.CommandIndex]

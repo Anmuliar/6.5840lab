@@ -1,5 +1,6 @@
 package shardctrler
-import "log"
+// import "log"
+import "sort"
 //
 // Shard controler: assigns shards to replication groups.
 //
@@ -30,15 +31,26 @@ type Config struct {
 
 func (config *Config) ShardBalance() {
 	GroupNum := len(config.Groups)
-	log.Printf("before:%v",config)
+	// log.Printf("before:%v",config)
 	if GroupNum == 0 {
 		return 
 	}
 	shardsize := int(10 / GroupNum)
 	extrashard :=  10 % GroupNum
-	for gid, _ := range config.Groups {
+	gids := make([]int, 0, len(config.Groups))
+	for gid := range config.Groups {
+		gids = append(gids, gid)
+	}
+	sort.Slice(gids, func(i, j int) bool {
+		// Sort based on the first server string in each group
+		// If you need a different sorting criteria, you can modify this comparison
+		return config.Groups[gids[i]][0] < config.Groups[gids[j]][0]
+	})
+	// log.Printf("%v",gids)
+	for _, gid := range gids {
+		// log.Printf("%v", gid)
 		ShardAssigned := 0
-		for shard := range config.Shards {
+		for shard := 0; shard < NShards; shard++ {
 			if config.Shards[shard] == gid {
 				if extrashard > 0 {
 					if ShardAssigned >= shardsize + 1{
@@ -59,10 +71,10 @@ func (config *Config) ShardBalance() {
 			extrashard --
 		}
 	}
-	log.Printf("remove:%v",config)
-	for gid, _ := range config.Groups {
+	// log.Printf("remove:%v",config)
+	for _, gid := range gids {
 		ShardAssigned := 0
-		for shard := range config.Shards {
+		for shard := 0; shard < NShards; shard++ {
 			if config.Shards[shard] == gid {
 				ShardAssigned ++
 			}
@@ -70,7 +82,7 @@ func (config *Config) ShardBalance() {
 		if ShardAssigned == shardsize + 1{
 			continue
 		} 
-		for shard := range config.Shards {
+		for shard := 0; shard < NShards; shard++ {
 			if config.Shards[shard] == 0 {
 				if extrashard > 0 {
 					if ShardAssigned < shardsize + 1 {
@@ -89,7 +101,7 @@ func (config *Config) ShardBalance() {
 			extrashard --
 		}
 	}
-	log.Printf("final:%v",config)
+	// log.Printf("final:%v",config)
 }
 type OpType int 
 const (
