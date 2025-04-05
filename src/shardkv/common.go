@@ -17,28 +17,72 @@ const (
 )
 
 type Err string
+type OpType int 
+const {
+	AppendOp 		OpType = 0
+	PutOp			OpType = 1
+	GetOp			OpType = 2
+	ActivateOp		OpType = 3
+	DeactivateOp 	OpType = 4
+}
+
+type ShardStateMachine struct {
+	valid 		bool
+	data		map[string]string
+	clientReq	map[int64]int
+}
 
 // Put or Append
 type PutAppendArgs struct {
 	// You'll have to add definitions here.
-	Key   string
-	Value string
-	Op    string // "Put" or "Append"
+	Key   		string
+	Value 		string
+	Op    		OpType // "Put" or "Append"
+	ClientId 	int64
+	SeqNum 		int
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
 }
 
 type PutAppendReply struct {
-	Err Err
+	Err 		Err
+	LeaderId 	int
 }
 
 type GetArgs struct {
-	Key string
+	Key 		string
+	ClientId 	int64
+	SeqNum 		int
 	// You'll have to add definitions here.
 }
 
 type GetReply struct {
-	Err   Err
-	Value string
+	Err   		Err
+	LeaderId 	int
+	Value 		string
 }
+
+type ActivateArgs struct {
+	Shard 		int
+	Data 		ShardStateMachine
+	ClientId 	int64
+	SeqNum		int
+}
+
+type DeactivateArgs struct {
+	Shard		int
+	ClientId	int64
+	SeqNum 		int
+}
+
+type ActivateReply struct {
+	Err 		Err
+	LeaderId	int
+}
+
+type DeactivateReply struct {
+	Err			Err
+	LeaderId	int
+}
+
