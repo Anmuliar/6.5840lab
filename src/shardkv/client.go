@@ -34,9 +34,11 @@ func nrand() int64 {
 }
 
 type Clerk struct {
-	sm       *shardctrler.Clerk
-	config   shardctrler.Config
-	make_end func(string) *labrpc.ClientEnd
+	sm       	*shardctrler.Clerk
+	config   	shardctrler.Config
+	make_end 	func(string) *labrpc.ClientEnd
+	clientId 	int64
+	seqNum 		int
 	// You will have to modify this struct.
 }
 
@@ -51,6 +53,8 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck := new(Clerk)
 	ck.sm = shardctrler.MakeClerk(ctrlers)
 	ck.make_end = make_end
+	ck.clientId = nrand()
+	ck.seqNum = 0
 	// You'll have to add code here.
 	return ck
 }
@@ -60,8 +64,12 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 // keeps trying forever in the face of all other errors.
 // You will have to modify this function.
 func (ck *Clerk) Get(key string) string {
-	args := GetArgs{}
-	args.Key = key
+	ck.seqNum ++
+	args := GetArgs{
+		Key: 		key,
+		ClientId: 	ck.clientId,
+		SeqNum:		ck.seqNum,
+	}
 
 	for {
 		shard := key2shard(key)
@@ -76,6 +84,8 @@ func (ck *Clerk) Get(key string) string {
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
+					ck.seqNum ++
+					args.SeqNum = ck.seqNum
 					break
 				}
 				// ... not ok, or ErrWrongLeader
@@ -92,12 +102,13 @@ func (ck *Clerk) Get(key string) string {
 // shared by Put and Append.
 // You will have to modify this function.
 func (ck *Clerk) PutAppend(key string, value string, op OpType) {
-	args := PutAppendArgs{}
-	args.Key = key
-	args.Value = value
-	args.Op = op
-
-
+	ck.seqNum ++
+	args := PutAppendArgs{
+		Key: 		key,
+		Value:		value,
+		ClientId: 	ck.clientId,
+		SeqNum:		ck.seqNum,
+	}
 	for {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
@@ -110,6 +121,8 @@ func (ck *Clerk) PutAppend(key string, value string, op OpType) {
 					return
 				}
 				if ok && reply.Err == ErrWrongGroup {
+					ck.seqNum ++
+					args.SeqNum = ck.seqNum
 					break
 				}
 				// ... not ok, or ErrWrongLeader

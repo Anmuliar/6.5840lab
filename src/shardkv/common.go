@@ -14,22 +14,27 @@ const (
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongGroup  = "ErrWrongGroup"
 	ErrWrongLeader = "ErrWrongLeader"
+	ErrWrongConfig = "ErrWrongConfig"
+	ErrTimeout	   = "ErrTimeout"
 )
 
 type Err string
-type OpType int 
-const {
+
+type OpType int
+
+const (
 	AppendOp 		OpType = 0
 	PutOp			OpType = 1
 	GetOp			OpType = 2
 	ActivateOp		OpType = 3
 	DeactivateOp 	OpType = 4
-}
+)
 
 type ShardStateMachine struct {
-	valid 		bool
-	data		map[string]string
-	clientReq	map[int64]int
+	Valid 		bool
+	Version 	int
+	Data		map[string]string
+	ClientReq	map[int64]int
 }
 
 // Put or Append
@@ -68,12 +73,15 @@ type ActivateArgs struct {
 	Data 		ShardStateMachine
 	ClientId 	int64
 	SeqNum		int
+	Version 	int
 }
 
 type DeactivateArgs struct {
 	Shard		int
+	Gid			int
 	ClientId	int64
 	SeqNum 		int
+	Version 	int
 }
 
 type ActivateReply struct {

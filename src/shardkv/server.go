@@ -4,9 +4,12 @@ package shardkv
 import "6.5840/labrpc"
 import "6.5840/raft"
 import "sync"
+import "sync/atomic"
 import "6.5840/labgob"
-
-
+import "6.5840/shardctrler"
+import "bytes"
+import "log"
+import "time"
 
 type Op struct {
 	// Your definitions here.
@@ -16,8 +19,10 @@ type Op struct {
 	Key			string
 	Value 		string
 	Shard 		int
+	Gid 		int
 	ClientId	int64
 	SeqNum		int
+	Version 	int
 	Data 		ShardStateMachine
 }
 
@@ -45,20 +50,15 @@ type ShardKV struct {
 	persister 	 *raft.Persister
 
 	// Your definitions here.
-	stateMachines 	map[int]ShardStateMachine
+	stateMachines 	[shardctrler.NShards]ShardStateMachine
 	waitCh		 	map[int]chan OpResult
+
+	// As a client to send the shard information
+	seqNum 		int
+	clientId 	int64
 }
 
-func key2shard(key string) int {
-	shard := 0
-	if len(key) > 0 {
-		shard = int(key[0])
-	}
-	shard %= shardctrler.NShards
-	return shard
-}
-
-func(kv *KVServer) Snapshot() {
+func(kv *ShardKV) Snapshot() {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	
@@ -67,9 +67,9 @@ func(kv *KVServer) Snapshot() {
 	e.Encode(kv.stateMachines)
 	e.Encode(kv.lastApplied)
 
-	kv.rf.Sanpshot(kv.lastApplied, w.Bytes())
+	kv.rf.Snapshot(kv.lastApplied, w.Bytes())
 }
-func(kv *KVServer) InstallSnapshot(snapshot []byte) {
+func(kv *ShardKV) InstallSnapshot(snapshot []byte) {
 	if len(snapshot) == 0 {
 		return 
 	}
@@ -78,9 +78,9 @@ func(kv *KVServer) InstallSnapshot(snapshot []byte) {
 
 	r := bytes.NewBuffer(snapshot)
 	d := labgob.NewDecoder(r)
-	var statemachines  map[int]ShardStateMachine
+	var statemachines  [shardctrler.NShards]ShardStateMachine
 	var lastApplied	   int
-	if d.Decode(&statemachine) != nil ||
+	if d.Decode(&statemachines) != nil ||
 	   d.Decode(&lastApplied) != nil{
 		log.Printf("Failed to decode the snapshot!")
 	} else {
@@ -88,8 +88,11 @@ func(kv *KVServer) InstallSnapshot(snapshot []byte) {
 		kv.lastApplied = lastApplied
 	}
 }
-func (sc *ShardCtrler) Submit(op Op) (Err, int, string) {
+func (kv *ShardKV) Submit(op Op) (Err, int, string) {
 	index, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		return ErrWrongLeader, -1, ""
+	}
 	ch := make(chan OpResult, 1)
 	kv.mu.Lock()
 	kv.waitCh[index] = ch
@@ -104,10 +107,10 @@ func (sc *ShardCtrler) Submit(op Op) (Err, int, string) {
 		if committedOp.SeqNum == op.SeqNum {
 			return committedOp.Err, committedOp.LeaderId, committedOp.Value 
 		} else {
-			return committedOp.Err, sc.rf.GetLeader(), string{}
+			return committedOp.Err, kv.rf.GetLeader(), ""
 		}
 	case <- time.After(500 * time.Millisecond):
-		return ErrTimeout, -1, string{}
+		return ErrTimeout, -1, ""
 	}
 }
 
@@ -132,7 +135,7 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		Value:		 args.Value, 
 		Shard: 		 key2shard(args.Key),
 		ClientId: 	 args.ClientId, 
-		SeqNum:		 args.SeqNum
+		SeqNum:		 args.SeqNum,
 	}
 	var _ string
 	reply.Err,  reply.LeaderId, _ = kv.Submit(op) 
@@ -143,7 +146,9 @@ func (kv *ShardKV) Activate(args *ActivateArgs, reply *ActivateReply) {
 		Operation: ActivateOp,
 		Shard:     args.Shard,
 		ClientId:  args.ClientId,
+		Data: 	   args.Data,
 		SeqNum:    args.SeqNum,
+		Version:   args.Version,
 	}
 	var _ string
 	reply.Err, reply.LeaderId, _ = kv.Submit(op)
@@ -153,20 +158,23 @@ func (kv *ShardKV) Deactivate(args *DeactivateArgs, reply *DeactivateReply) {
 	op := Op{
 		Operation: DeactivateOp,
 		Shard:     args.Shard,
+		Gid:	   args.Gid,
 		ClientId:  args.ClientId,
 		SeqNum:    args.SeqNum,
+		Version:   args.Version,
 	}
 	var _ string
 	reply.Err, reply.LeaderId, _ = kv.Submit(op)
 }
 
-func (kv *KVServer) applier() {
+func (kv *ShardKV) applier() {
 	for !kv.killed() {
 		select {
 		case msg := <- kv.applyCh:
-			if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
-				kv.Snapshot()
-			}
+			log.Printf("%v-%v recieve msg %v from raft", kv.gid,kv.me, msg)
+			// if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
+			// 	kv.Snapshot()
+			// }
 			if msg.CommandValid {
 				kv.mu.Lock()
 				op := msg.Command.(Op)
@@ -175,34 +183,52 @@ func (kv *KVServer) applier() {
 					SeqNum:			op.SeqNum,
 					ClientId: 		op.ClientId,
 				}
-				lastSeq, flag := kv.stateMachines[op.Shard].clientReq[op.ClientId]
+				lastSeq, flag := kv.stateMachines[op.Shard].ClientReq[op.ClientId]
 				if !flag || op.SeqNum > lastSeq {
-					switch op.Opeartion {
+					switch op.Operation {
 					case PutOp:
-						if kv.stateMachines[op.Shard].valid {
-							kv.stateMachines[op.Shard].data[op.Key] = op.Value
+						if kv.stateMachines[op.Shard].Valid {
+							kv.stateMachines[op.Shard].Data[op.Key] = op.Value
 						} else {
 							result.Err = ErrWrongGroup
 						}
 					case AppendOp:
-						if kv.stateMachines[op.Shard].valid {
-							kv.stateMachines[op.Shard].data[op.Key] += op.Value
+						if kv.stateMachines[op.Shard].Valid {
+							kv.stateMachines[op.Shard].Data[op.Key] += op.Value
 						} else {
 							result.Err = ErrWrongGroup
 						}
 					case GetOp:
-						if kv.stateMachines[op.Shard].valid {
-							result.Value = kv.stateMachines[op.Shard].data[op.Key]
+						if kv.stateMachines[op.Shard].Valid {
+							result.Value = kv.stateMachines[op.Shard].Data[op.Key]
+							log.Printf("Value get on %v-%v is %v", kv.gid, kv.me, result.Value)
 						} else {
 							result.Err = ErrWrongGroup
 						}
 					case ActivateOp:
-						kv.stateMachines[op.Shard] = op.Data
-						kv.stateMachines[op.Shard].valid = true
+						if kv.stateMachines[op.Shard].Version >= op.Version  {
+							result.Err = ErrWrongConfig
+						} else {
+							kv.stateMachines[op.Shard] = op.Data
+							kv.stateMachines[op.Shard].Valid = true
+						}
 					case DeactivateOp:
-						kv.stateMachines[op.Shard].valid = false
+						if kv.stateMachines[op.Shard].Version >= op.Version {
+							result.Err = ErrWrongConfig
+						} else {
+							kv.stateMachines[op.Shard].Valid = false
+							ssm := kv.stateMachines[op.Shard] // create a copy of the state machine
+							go kv.ActivateClient(op.Shard, op.Gid ,ssm, op.Version) // use the copy in ActivateClient
+						}
 					}
-					kv.stateMachines[op.Shard].clientReq[op.ClientId] = op.SeqNum
+					log.Printf("%v-%v serves %v:%v",kv.gid, kv.me ,op.Shard, kv.stateMachines[op.Shard])
+					if kv.stateMachines[op.Shard].ClientReq == nil {
+						kv.stateMachines[op.Shard].ClientReq = make(map[int64]int)
+					}
+					if kv.stateMachines[op.Shard].Data == nil {
+						kv.stateMachines[op.Shard].Data = make(map[string]string)
+					}
+					kv.stateMachines[op.Shard].ClientReq[op.ClientId] = op.SeqNum
 				}
 				if msg.CommandIndex > kv.lastApplied {
 					kv.lastApplied = msg.CommandIndex 
@@ -219,38 +245,115 @@ func (kv *KVServer) applier() {
 				kv.mu.Unlock()
 			}
 			if msg.SnapshotValid {
-				kv.InstallSnapshot(msg.snapshots)
+				kv.InstallSnapshot(msg.Snapshot)
 				continue
 			}
 		}
 	}
 }
-func (kv *KVServer) DeactivateClient(shard int) {
-
-}
-func (kv *KVServer) ActivateClient(shard int, data ShardStateMachine) {
-
-}
-func (kv *KVServer) controler() {
+func (kv *ShardKV) DeactivateClient(shard int, tgtgid int, version int) {
+	kv.seqNum ++
+	
+	args := DeactivateArgs{
+		Shard: 		shard,
+		Gid:		tgtgid,
+		ClientId:	kv.clientId,
+		SeqNum:		kv.seqNum,
+		Version: 	version,
+	}
 	for !kv.killed() {
-		config = kv.sm.Query(-1)
-		if config != kv.config {
-			kv.mu.Lock()
-			for shard := 0; shard < shardctrler.NShards; shard++ {
-				if config.Shards[shard] != kv.config.Shards[shard] {
-					if kv.config.Shards[shard] == 0 && config.Shards[shard] == kv.gid {
-						var ssm ShardStateMachine
-						ssm.valid = true
-						ssm.data = make(map[string]string)
-						ssm.clientReq = make(map[int64]int)
-						ActivateClient(shard,ssm)
-					}
-					if kv.config.Shards[shard] == kv.gid {
-						DeactivateClient(shard)
+		if kv.config.Num > version {
+			break
+		}
+		var reply DeactivateReply
+		kv.Deactivate(&args, &reply)
+		// log.Printf("Submit deactivate apply %v-%v shard:%v result:%v",kv.gid,kv.me,shard,reply)
+		if reply.Err == OK {
+			return 
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+func (kv *ShardKV) ActivateClient(shard int, gid int, data ShardStateMachine, version int) {
+	kv.seqNum ++
+	args := ActivateArgs{
+		Shard: 		shard,
+		Data:		data,
+		ClientId: 	kv.clientId,
+		SeqNum:		kv.seqNum,
+		Version: 	version,
+	}
+	if args.Data.ClientReq == nil || args.Data.Data == nil  {
+		log.Printf("291 trying to activate a nil data. %v-%v",kv.gid,kv.me)
+	}
+	for !kv.killed() {
+		if kv.config.Shards[shard] != gid {
+			break
+		}
+		servers, ok := kv.config.Groups[gid]
+		if ok {
+			for si := 0; si < len(servers); si++ {
+				srv := kv.make_end(servers[si])
+				var reply ActivateReply
+				ok := srv.Call("ShardKV.Activate", &args, &reply)
+				if ok && reply.Err == OK {
+					return 
+				}
+				if ok && reply.Err == ErrWrongConfig {
+					if kv.config.Num == version  {
+						break
+					} else {
+						return
 					}
 				}
 			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+func (kv *ShardKV) CompareConfig(newConfig shardctrler.Config) bool {
+	// Compare the number of groups
+	if len(kv.config.Groups) != len(newConfig.Groups) {
+		return false
+	}
+
+	// Compare the shards assignment
+	for i := 0; i < shardctrler.NShards; i++ {
+		if kv.config.Shards[i] != newConfig.Shards[i] {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (kv *ShardKV) controler() {
+	for !kv.killed() {
+		config := kv.sm.Query(-1)
+		oldconfig := kv.config
+		if !kv.CompareConfig(config) {
+			log.Printf("new config:%v old config:%v",config, oldconfig)
+			kv.mu.Lock()
 			kv.config = config
+			for shard := 0; shard < shardctrler.NShards; shard++ {
+				if oldconfig.Shards[shard] != kv.config.Shards[shard] {
+					if oldconfig.Shards[shard] == 0 && kv.config.Shards[shard] == kv.gid {
+						var ssm ShardStateMachine
+						ssm.Valid = true
+						ssm.Version = config.Num
+						ssm.Data = make(map[string]string)
+						ssm.ClientReq = make(map[int64]int)
+						ssm.Data["test"] = "testtest"
+						if ssm.Data == nil || ssm.ClientReq == nil {
+							log.Printf("350 trying to activate a nil data. %v-%v",kv.gid,kv.me)
+						}
+						go kv.ActivateClient(shard, kv.gid, ssm, config.Num)	
+					}
+					if oldconfig.Shards[shard] == kv.gid {
+						go kv.DeactivateClient(shard, kv.config.Shards[shard], config.Num)
+					}
+				}
+			}
 			kv.mu.Unlock()
 		} 
 		time.Sleep(100 * time.Millisecond)
@@ -263,6 +366,7 @@ func (kv *KVServer) controler() {
 // turn off debug output from this instance.
 func (kv *ShardKV) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
+	log.Printf("%v-%v killed.",kv.gid,kv.me)
 	kv.rf.Kill()
 	// Your code here, if desired.
 }
@@ -318,8 +422,18 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-
-	shardctrler.NShards
+	kv.seqNum = 0
+	kv.clientId = nrand()
+	for i := 0; i < shardctrler.NShards; i++ {
+		kv.stateMachines[i] = ShardStateMachine{
+			Data:    make(map[string]string),
+			Valid:   false,
+			ClientReq: make(map[int64]int),
+			Version: -1,
+		}
+	}
+	kv.waitCh = make(map[int]chan OpResult)
 	go kv.applier()
+	go kv.controler()
 	return kv
 }
