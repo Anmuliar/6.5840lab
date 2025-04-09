@@ -199,10 +199,16 @@ func (sc *ShardCtrler) applier() {
 						if op.Int1 > len(sc.configs) {
 							result.Err = ErrNoKey
 						}
-						
-						result.Value = sc.configs[(op.Int1 + len(sc.configs)) % len(sc.configs)]
+						if op.Int1 + len(sc.configs) < 0 {
+							result.Value = Config{
+								Num: 		0,
+								Groups:		map[int][]string{},
+							}
+						} else {
+							result.Value = sc.configs[(op.Int1 + len(sc.configs)) % len(sc.configs)]
 						// log.Printf("In server %v: the No.%v config before balance is %v", sc.me, op.Int1, result.Value)
-						result.Value.ShardBalance()
+							result.Value.ShardBalance()
+						}
 						// log.Printf("In server %v: the No.%v config after balance is %v", sc.me, op.Int1, result.Value)
 					}
 				}

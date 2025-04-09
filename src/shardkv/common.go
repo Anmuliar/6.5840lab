@@ -1,5 +1,5 @@
 package shardkv
-
+import "6.5840/shardctrler"
 //
 // Sharded key/value server.
 // Lots of replica groups, each running Raft.
@@ -21,25 +21,28 @@ const (
 type Err string
 
 type OpType int
-type ShardState int
+
 const (
 	AppendOp 		OpType = 0
 	PutOp			OpType = 1
 	GetOp			OpType = 2
-	ActivateOp		OpType = 3
-	DeactivateOp 	OpType = 4
+	UpdateOp		OpType = 3
+	ActivateOp 		OpType = 4
+	EraseOp			OpType = 5
+	OnlineOp 		OpType = 6
 )
+type ShardState int
 
 const (
 	Serving 		ShardState = 0
 	Offline			ShardState = 1
 	Pulling 		ShardState = 2
-	Serving 		ShardState = 3
+	Waiting        	ShardState = 3
+	Erasing 		ShardState = 4
 )
 
 type ShardStateMachine struct {
-	Valid 		bool
-	Version 	int
+	State 		ShardState
 	Data		map[string]string
 	ClientReq	map[int64]int
 }
@@ -75,29 +78,21 @@ type GetReply struct {
 	Value 		string
 }
 
-type ActivateArgs struct {
+type PullDataArgs struct{
+	Version 	int
 	Shard 		int
-	Data 		[]byte
-	ClientId 	int64
-	SeqNum		int
-	Version 	int
 }
 
-type DeactivateArgs struct {
-	Shard		int
-	Gid			int
-	ClientId	int64
-	SeqNum 		int
-	Version 	int
+type EraseDataArgs struct {
+	Veriosn 	int
+	Shard 		int
 }
 
-type ActivateReply struct {
-	Err 		Err
-	LeaderId	int
-}
-
-type DeactivateReply struct {
+type PullDataReply struct {
 	Err			Err
-	LeaderId	int
+	Data 		[]byte
 }
 
+type EraseDataReply struct {
+	Err			Err
+}
