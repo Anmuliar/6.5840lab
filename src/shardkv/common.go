@@ -21,13 +21,20 @@ const (
 type Err string
 
 type OpType int
-
+type ShardState int
 const (
 	AppendOp 		OpType = 0
 	PutOp			OpType = 1
 	GetOp			OpType = 2
 	ActivateOp		OpType = 3
 	DeactivateOp 	OpType = 4
+)
+
+const (
+	Serving 		ShardState = 0
+	Offline			ShardState = 1
+	Pulling 		ShardState = 2
+	Serving 		ShardState = 3
 )
 
 type ShardStateMachine struct {
@@ -70,7 +77,7 @@ type GetReply struct {
 
 type ActivateArgs struct {
 	Shard 		int
-	Data 		ShardStateMachine
+	Data 		[]byte
 	ClientId 	int64
 	SeqNum		int
 	Version 	int
