@@ -13,6 +13,7 @@ import "crypto/rand"
 import "math/big"
 import "6.5840/shardctrler"
 import "time"
+import "log"
 
 // which shard is a key in?
 // please use this function,
@@ -79,13 +80,13 @@ func (ck *Clerk) Get(key string) string {
 			for si := 0; si < len(servers); si++ {
 				srv := ck.make_end(servers[si])
 				var reply GetReply
+				log.Printf("[Client]%v-%v begin to get %v value target:%v-%v",ck.clientId, ck.seqNum, key,gid, si)
 				ok := srv.Call("ShardKV.Get", &args, &reply)
+				log.Printf("[Client]%v-%v get %v value, reply :%v-%v target:%v-%v",ck.clientId, ck.seqNum, key, ok,reply,gid, si)
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
-					ck.seqNum ++
-					args.SeqNum = ck.seqNum
 					break
 				}
 				// ... not ok, or ErrWrongLeader
@@ -116,13 +117,13 @@ func (ck *Clerk) PutAppend(key string, value string, op OpType) {
 			for si := 0; si < len(servers); si++ {
 				srv := ck.make_end(servers[si])
 				var reply PutAppendReply
+				log.Printf("[Client]%v-%v begin to put/append %v on %v target:%v-%v",ck.clientId, ck.seqNum, value, key, gid, si)
 				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
+				log.Printf("[Client]%v-%v put/append %v on %v, reply :%v-%v target:%v-%v",ck.clientId, ck.seqNum, value, key, ok,reply, gid, si)
 				if ok && reply.Err == OK {
 					return
 				}
 				if ok && reply.Err == ErrWrongGroup {
-					ck.seqNum ++
-					args.SeqNum = ck.seqNum
 					break
 				}
 				// ... not ok, or ErrWrongLeader

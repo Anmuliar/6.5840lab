@@ -1,5 +1,4 @@
 package shardkv
-import "6.5840/shardctrler"
 //
 // Sharded key/value server.
 // Lots of replica groups, each running Raft.
@@ -84,7 +83,7 @@ type PullDataArgs struct{
 }
 
 type EraseDataArgs struct {
-	Veriosn 	int
+	Version 	int
 	Shard 		int
 }
 

@@ -44,12 +44,9 @@ type OpResult struct {
 func (sc *ShardCtrler) Submit(op Op) (Err, int, Config) {
 
 	// log.Printf("Submitting op %v",op)
-	index, _, isLeader := sc.rf.Start(op)
-	if !isLeader {
-		return ErrWrongLeader, -1, Config{}
-	}
 	ch := make(chan OpResult, 1)
 	sc.mu.Lock()
+	index, _, isLeader := sc.rf.Start(op)
 	sc.waitCh[index] = ch
 	sc.mu.Unlock()
 	defer func() {
@@ -57,6 +54,10 @@ func (sc *ShardCtrler) Submit(op Op) (Err, int, Config) {
 		delete(sc.waitCh, index)
 		sc.mu.Unlock()
 	}()
+	
+	if !isLeader {
+		return ErrWrongLeader, -1, Config{}
+	}
 	select {
 	case committedOp := <- ch:
 		if committedOp.SeqNum == op.SeqNum {

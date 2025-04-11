@@ -107,18 +107,18 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		ClientId: 	args.ClientId,
 		SeqNum: 	args.SeqNum,
 	}
+	ch := make(chan OpResult, 1)
+	kv.mu.Lock()
 	index, _, isLeader := kv.rf.Start(op)
-	
+	kv.waitCh[index] = ch 
+	kv.mu.Unlock()
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		reply.LeaderId = -1
 		return 
 	}
 
-	ch := make(chan OpResult, 1)
-	kv.mu.Lock()
-	kv.waitCh[index] = ch 
-	kv.mu.Unlock()
+	
 	select {
 	case committedOp := <-ch:
 		if committedOp.ClientId == args.ClientId && committedOp.SeqNum == op.SeqNum {
