@@ -223,9 +223,9 @@ func (kv *ShardKV) applier() {
 		select {
 		case msg := <- kv.applyCh:
 			// log.Printf("%v-%v recieve msg %v from raft", kv.gid,kv.me, msg)
-			if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
-				kv.Snapshot()
-			}
+			// if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
+			// 	kv.Snapshot()
+			// }
 			if msg.CommandValid {
 				kv.mu.Lock()
 				op := msg.Command.(Op)
