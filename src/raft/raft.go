@@ -220,8 +220,8 @@ func (rf *Raft) readPersist(data []byte) {
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
-	rf.mu.Lock()
 	log.Printf("snapshot %v on %v",index, rf.me)
+	rf.mu.Lock()
 	if index < rf.lastIncludedIndex {
 		return 
 	}
@@ -366,7 +366,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
-	DPrintf("in%v, args:%v log:%v term:%v\n",rf.me,args,len(rf.log),rf.currentTerm)
+	log.Printf("[Raft.AppendEntries]in%v, args:%v log:%v term:%v\n",rf.me,args,len(rf.log),rf.currentTerm)
 	rf.applySnap()
 	if args.Term < rf.currentTerm {
 		reply.Success = false
@@ -392,7 +392,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Unlock()
 	// DPrintf("leadercommit:%v rfcommit:%v\n",args.LeaderCommit, rf.commitIndex)
 	prevlogrank, prevlogentry := rf.GetEntry(args.PrevLogIndex)
-	DPrintf("append prev:%v %v",prevlogrank, prevlogentry)
+	log.Printf("[Raft.AppendEntries]append prev:%v %v",prevlogrank, prevlogentry)
 	if args.PrevLogIndex >= rf.lastIncludedIndex + 1 + len(rf.log) {
 		reply.Success = false
 		reply.Term = rf.currentTerm
@@ -520,7 +520,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	rf.log = append(rf.log, entry)
 	rf.persist(390)
-	log.Printf("Command %v in Index %v recieved on server %v.", command, entry.Index, rf.me)
+	log.Printf("[Raft.start]Command %v in Index %v recieved on server %v.", command, entry.Index, rf.me)
 	go rf.replicateLog()
 	// Your code here (2B).
 	return rf.lastIncludedIndex + len(rf.log), rf.currentTerm, true
@@ -579,7 +579,7 @@ func (rf *Raft) replicateLog() {
 					}
 					currentNextIndex := rf.nextIndex[Id]
 					nextIndex, entry := rf.GetEntry(rf.nextIndex[Id])
-					log.Printf("%v -> %v nextIndex: %v entry: %v nextindex: %v log:%v",rf.me, Id, nextIndex, entry, rf.nextIndex[Id],len(rf.log))
+					log.Printf("[Raft.replicate]%v -> %v nextIndex: %v entry: %v nextindex: %v log:%v",rf.me, Id, nextIndex, entry, rf.nextIndex[Id],len(rf.log))
 					prevLogIndex := entry.Index - 1
 					_, entry_prev := rf.GetEntry(prevLogIndex)
 					prevLogTerm := entry_prev.Term
@@ -602,7 +602,7 @@ func (rf *Raft) replicateLog() {
 					
 					if rf.sendAppendEntries(Id, &args, &reply) {
 						rf.mu.Lock()
-						DPrintf("peer %v reply %v\n",Id, reply)
+						log.Printf("[Raft.replicate]peer %v reply %v\n",Id, reply)
 						if reply.Success {
 							if rf.nextIndex[Id] < currentNextIndex + len(entries){
 								rf.nextIndex[Id] = currentNextIndex + len(entries)
@@ -706,10 +706,9 @@ func (rf *Raft) applyComdFunc() {
 	entries := make([]Entry, rf.commitIndex - rf.lastApplied)
 	index1, _ := rf.GetEntry(rf.lastApplied + 1)
 	index2, _ := rf.GetEntry(rf.commitIndex + 1)
-	applytaskid := rand.Int63()
-	log.Printf("%v", rf.lastIncludedIndex)
-	log.Printf("ID:%v entries from %v(%v) - %v(%v) to be commited on %v\n",applytaskid, index1, rf.lastApplied + 1,index2, rf.commitIndex + 1,rf.me)
+	log.Printf("[Raft]Entries from %v(%v) - %v(%v) to be commited on %v\n", index1, rf.lastApplied + 1,index2, rf.commitIndex + 1,rf.me)
 	copy(entries, rf.log[index1 : index2])
+	log.Printf("[Raft]Entries from %v(%v) - %v(%v) copy done on %v",index1, rf.lastApplied + 1, index2, rf.commitIndex + 1, rf.me)
 	rf.lastApplied = newlast 
 	rf.mu.Unlock()
 	// successfulapplied := prelast - 1
@@ -719,7 +718,6 @@ func (rf *Raft) applyComdFunc() {
 			Command: 	  entry.Command,
 			CommandIndex: prelast + i,
 		}
-		DPrintf("ID:%v msg to be applied:%v",applytaskid,msg)
 		rf.applyCh <- msg
 		// successfulapplied = prelast + i
 	}

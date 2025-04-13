@@ -10,6 +10,7 @@ import "6.5840/shardctrler"
 import "bytes"
 import "log"
 import "time"
+import "fmt"
 
 type Op struct {
 	// Your definitions here.
@@ -57,7 +58,6 @@ type ShardKV struct {
 	waitCh		 	map[int]chan OpResult
 
 	// As a client to send the shard information
-	seqNum 		int
 	clientId 	int64
 }
 
@@ -129,8 +129,9 @@ func(kv *ShardKV) InstallSnapshot(snapshot []byte) {
 func (kv *ShardKV) Submit(op Op) (Err, int, string) { 
 	
 	ch := make(chan OpResult, 1)
-	kv.mu.Lock()
 	index, _, isLeader := kv.rf.Start(op)
+	kv.mu.Lock()
+	
 	kv.waitCh[index] = ch
 	kv.mu.Unlock()
 	log.Printf("%v-%v submit %v on index %v", kv.gid, kv.me, op, index)
@@ -192,7 +193,7 @@ func (kv *ShardKV) CheckConfig(shard int, version int) bool{
 }
 func (kv *ShardKV) PullData(args *PullDataArgs, reply *PullDataReply) {
 
-	log.Printf("%v-%v recieve args:%v, current config is %v",kv.gid,kv.me,args,kv.config.Num)
+	log.Printf("[Server.pulldata]%v-%v recieve args:%v, current config is %v",kv.gid,kv.me,args,kv.config.Num)
 	if kv.CheckConfig(args.Shard, args.Version) {
 		kv.mu.Lock()
 		reply.Data = kv.EncodeSSM(kv.stateMachines[args.Shard])
@@ -203,27 +204,22 @@ func (kv *ShardKV) PullData(args *PullDataArgs, reply *PullDataReply) {
 	}
 }
 func (kv *ShardKV) EraseData(args *EraseDataArgs, reply *EraseDataReply) {
-
-	if kv.CheckConfig(args.Shard, args.Version) {
-		kv.mu.Lock()
-		kv.seqNum ++
-		op := Op {
-			Operation:   EraseOp,
-			Shard: 		 args.Shard,
-			Version:	 args.Version,
-			ClientId: 	 kv.clientId,
-			SeqNum: 	 kv.seqNum,
-		}
-		kv.mu.Unlock()
-		reply.Err, _, _ = kv.Submit(op)
-	} else {
-		reply.Err = ErrWrongConfig
+	log.Printf("[Server.erasedata]%v-%v recieve args:%v, current config is %v",kv.gid,kv.me,args,kv.config.Num)
+	kv.mu.Lock()
+	op := Op {
+		Operation:   EraseOp,
+		Shard: 		 args.Shard,
+		Version:	 args.Version,
+		ClientId: 	 kv.clientId + int64(args.Shard * 100000000 + 50000000),
+		SeqNum: 	 args.Version,
 	}
-
+	kv.mu.Unlock()
+	reply.Err, _, _ = kv.Submit(op)
 }
 
 func (kv *ShardKV) applier() {
 	for !kv.killed() {
+		log.Printf("[Server.applier]%v-%v is waiting for msg.",kv.gid, kv.me)
 		select {
 		case msg := <- kv.applyCh:
 			// log.Printf("%v-%v recieve msg %v from raft", kv.gid,kv.me, msg)
@@ -242,21 +238,21 @@ func (kv *ShardKV) applier() {
 				if !flag || op.SeqNum > lastSeq {
 					switch op.Operation {
 					case PutOp:
-						log.Printf("%v-%v trying to put %v to key %v on shard %v",kv.gid,kv.me, op.Value ,op.Key, op.Shard)
+						log.Printf("[Server.Update]%v-%v trying to put %v to key %v on shard %v",kv.gid,kv.me, op.Value ,op.Key, op.Shard)
 						if kv.stateMachines[op.Shard].State == Serving {
 							kv.stateMachines[op.Shard].Data[op.Key] = op.Value
 						} else {
 							result.Err = ErrWrongGroup
 						}
 					case AppendOp:
-						log.Printf("%v-%v trying to append %v to key %v on shard %v client:%v seqnum:%v",kv.gid,kv.me, op.Value ,op.Key, op.Shard, op.ClientId, op.SeqNum)
+						log.Printf("[Server.Append]%v-%v trying to append %v to key %v on shard %v client:%v seqnum:%v",kv.gid,kv.me, op.Value ,op.Key, op.Shard, op.ClientId, op.SeqNum)
 						if kv.stateMachines[op.Shard].State == Serving {
 							kv.stateMachines[op.Shard].Data[op.Key] += op.Value
 						} else {
 							result.Err = ErrWrongGroup
 						}
 					case GetOp:
-						log.Printf("%v-%v trying to get %v on shard %v",kv.gid,kv.me, op.Key, op.Shard)
+						log.Printf("[Server.Get]%v-%v trying to get %v on shard %v",kv.gid,kv.me, op.Key, op.Shard)
 						if kv.stateMachines[op.Shard].State == Serving {
 							result.Value = kv.stateMachines[op.Shard].Data[op.Key]
 							log.Printf("Value get on %v-%v is %v", kv.gid, kv.me, result.Value)
@@ -265,7 +261,7 @@ func (kv *ShardKV) applier() {
 							result.Err = ErrWrongGroup
 						}
 					case UpdateOp:
-						log.Printf("%v-%v trying to update from config %v\n to new config %v\n",kv.gid,kv.me,op.PreConfig.Num,op.Config.Num)
+						log.Printf("[Server.Update]%v-%v trying to update from config %v\n to new config %v\n",kv.gid,kv.me,op.PreConfig.Num,op.Config.Num)
 						if op.Version <= kv.logNum {
 							result.Err = ErrWrongConfig
 						} else {
@@ -290,33 +286,42 @@ func (kv *ShardKV) applier() {
 							kv.preconfig = op.PreConfig
 						}
 					case ActivateOp:
-						log.Printf("%v-%v trying to activate shard %v",kv.gid,kv.me, op.Shard)
-						if op.Version != kv.logNum && kv.stateMachines[op.Shard].State != Pulling{
+						log.Printf("[Server.Activate]%v-%v trying to activate shard %v",kv.gid,kv.me, op.Shard)
+						if op.Version != kv.logNum || kv.stateMachines[op.Shard].State != Pulling{
 							result.Err = ErrWrongConfig
 						} else {
 							kv.DecodeSSM(op.Shard, op.Data)
 							kv.stateMachines[op.Shard].State = Waiting
 						}
 					case EraseOp:
-						log.Printf("%v-%v trying to erase shard %v",kv.gid,kv.me, op.Shard)
-						if op.Version != kv.logNum && kv.stateMachines[op.Shard].State != Erasing{
+						log.Printf("[Server.Erase]%v-%v trying to erase shard %v",kv.gid,kv.me, op.Shard)
+						if op.Version != kv.logNum || kv.stateMachines[op.Shard].State != Erasing{
 							result.Err = ErrWrongConfig
 						} else {
 							kv.stateMachines[op.Shard].State = Offline
 						}
 					case OnlineOp:
-						log.Printf("%v-%v trying to onserving shard %v",kv.gid,kv.me, op.Shard)
-						if op.Version != kv.logNum && kv.stateMachines[op.Shard].State != Waiting{
+						log.Printf("[Server.Online]%v-%v trying to onserving shard %v",kv.gid,kv.me, op.Shard)
+						if op.Version != kv.logNum || kv.stateMachines[op.Shard].State != Waiting{
 							result.Err = ErrWrongConfig
 						} else {
 							kv.stateMachines[op.Shard].State = Serving
 						}
 					}
 					if op.Operation != UpdateOp {
-						log.Printf("%v-%v serves %v config %v :%v",kv.gid, kv.me ,op.Shard, kv.logNum, kv.stateMachines[op.Shard])
+						log.Printf("[Server.state]%v-%v serves %v config %v :%v",kv.gid, kv.me ,op.Shard, kv.logNum, kv.stateMachines[op.Shard])
 					}
 					if result.Err != ErrWrongGroup {
 						kv.stateMachines[op.Shard].ClientReq[op.ClientId] = op.SeqNum
+					}
+				}else if op.Operation ==  GetOp {
+					log.Printf("[Server.Get]%v-%v trying to duplicate get %v on shard %v",kv.gid,kv.me, op.Key, op.Shard)
+					if kv.stateMachines[op.Shard].State == Serving {
+						result.Value = kv.stateMachines[op.Shard].Data[op.Key]
+						log.Printf("Value get on %v-%v is %v", kv.gid, kv.me, result.Value)
+					} else {
+						log.Printf("%v-%v Assign err.",kv.gid,kv.me)
+						result.Err = ErrWrongGroup
 					}
 				}
 				if msg.CommandIndex > kv.lastApplied {
@@ -342,6 +347,15 @@ func (kv *ShardKV) applier() {
 func (kv *ShardKV) canupdate() bool {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
+	log.Printf("[Server]%d-%d in config %v-%v is checking", kv.gid, kv.me, kv.logNum, kv.config)
+
+	// Print all state machines' states in a single line
+	stateLine := fmt.Sprintf("[Server]%d-%d Shard states: ",kv.gid, kv.me)
+	for shard := 0; shard < 10; shard++ {
+		stateLine += fmt.Sprintf("Shard %d: %v; ", shard, kv.stateMachines[shard].State)
+	}
+	log.Printf(stateLine)
+
 	for shard := 0; shard < 10; shard++ {
 		if kv.stateMachines[shard].State != Serving && kv.stateMachines[shard].State != Offline {
 			return false
@@ -374,24 +388,24 @@ func (kv *ShardKV) controler() {
 		if !isleader {
 			continue
 		}
-		// log.Printf("%d-%d in config %v-%v is checking",kv.gid, kv.me,kv.logNum,kv.config)
+
 		if kv.canupdate() {
 			config := kv.sm.Query(kv.logNum + 1)
 			// log.Printf("%v-%v get config %v",kv.gid, kv.me, config)
 			if config.Num == kv.logNum + 1 {
 				kv.mu.Lock()
-				kv.seqNum ++
 				subOp := Op{
 					Operation: 		UpdateOp,
 					Config: 		config,	
 					Version: 		config.Num,
 					PreConfig:		kv.config,
-					ClientId:	 	kv.clientId,
-					SeqNum:			kv.seqNum, 		
+					ClientId:	 	kv.clientId + int64(130000000),
+					SeqNum:			config.Num , 		
 				}
 				kv.mu.Unlock()
-				log.Printf("%v-%v submit a update request. %v",kv.gid, kv.me,subOp)
-				kv.Submit(subOp)				
+				log.Printf("[Server]%v-%v submit a update request. %v",kv.gid, kv.me,subOp)
+				ok,_,_ := kv.Submit(subOp)
+				log.Printf("[Server]%v-%v recieve err %v after sent update request",kv.gid, kv.me, ok)				
 			}
 		}
 	}
@@ -422,14 +436,13 @@ func (kv *ShardKV) datapuller() {
 						log.Printf("%v-%v recieve %v in datapuller from %v",kv.gid,kv.me,reply,servers[si])
 						if ok && reply.Err == OK {
 							kv.mu.Lock()
-							kv.seqNum ++
 							subOp := Op{
 								Operation: 		ActivateOp,
 								Version: 		kv.config.Num,
 								Data: 			reply.Data,
 								Shard: 			shard,
-								ClientId: 		kv.clientId,
-								SeqNum: 		kv.seqNum,
+								ClientId: 		kv.clientId + int64(shard * 100000000 + 40000000),
+								SeqNum: 		kv.config.Num ,
 							}
 							kv.mu.Unlock()
 							ok,_,_ := kv.Submit(subOp)
@@ -469,13 +482,12 @@ func (kv *ShardKV) dataeraser() {
 						
 						if ok && reply.Err == OK {
 							kv.mu.Lock()
-							kv.seqNum ++
 							subOp := Op{
 								Operation: 	OnlineOp,
 								Version: 	kv.config.Num,
 								Shard: 		shard,
-								ClientId: 	kv.clientId,
-								SeqNum: 	kv.seqNum,	
+								ClientId: 	kv.clientId + int64(shard * 100000000 + 60000000),
+								SeqNum: 	kv.config.Num ,	
 							}
 							kv.mu.Unlock()
 							ok,_,_ := kv.Submit(subOp)
@@ -549,7 +561,6 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	// Use something like this to talk to the shardctrler:
 	// kv.mck = shardctrler.MakeClerk(kv.ctrlers)
 	kv.sm = shardctrler.MakeClerk(ctrlers)
-	kv.seqNum = 0
 	kv.logNum = 0 
 	kv.clientId = nrand()
 	for i := 0; i < shardctrler.NShards; i++ {
