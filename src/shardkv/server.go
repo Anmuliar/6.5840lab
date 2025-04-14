@@ -28,6 +28,15 @@ type Op struct {
 	Data 		[]byte
 }
 
+const Debug = false
+
+func DPrintf(format string, a ...interface{}) (n int, err error) {
+	if Debug {
+		log.Printf(format, a...)
+	}
+	return
+}
+
 
 type OpResult struct {
 	Err 		Err
@@ -70,14 +79,14 @@ func(kv *ShardKV) Snapshot() {
 	e.Encode(kv.logNum)
 	e.Encode(kv.config)
 	e.Encode(kv.preconfig)
-	log.Printf("%v-%v snapshot %v statemachine:%v\n config:%v oldconfig:%v",kv.gid, kv.me, kv.lastApplied, kv.stateMachines,kv.config.Num,kv.preconfig.Num)
+	DPrintf("%v-%v snapshot %v statemachine:%v\n config:%v oldconfig:%v",kv.gid, kv.me, kv.lastApplied, kv.stateMachines,kv.config.Num,kv.preconfig.Num)
 	index := kv.lastApplied
 	bytes := make([]byte, len(w.Bytes()))
 	copy(bytes, w.Bytes())
-	log.Printf("%v-%v snapshot %v copy done",kv.gid, kv.me, kv.lastApplied)
+	DPrintf("%v-%v snapshot %v copy done",kv.gid, kv.me, kv.lastApplied)
 	kv.mu.Unlock()
 	kv.rf.Snapshot(index, bytes)
-	log.Printf("%v-%v snapshot done.",kv.gid, kv.me)
+	DPrintf("%v-%v snapshot done.",kv.gid, kv.me)
 }
 func(kv *ShardKV) EncodeSSM(ssm ShardStateMachine) []byte {
 	w := new(bytes.Buffer)
@@ -116,14 +125,14 @@ func(kv *ShardKV) InstallSnapshot(snapshot []byte) {
 	   d.Decode(&logNum) != nil ||
 	   d.Decode(&config) != nil ||
 	   d.Decode(&preconfig) != nil{
-		log.Printf("Failed to decode the snapshot!")
+		DPrintf("Failed to decode the snapshot!")
 	} else {
 		kv.stateMachines = statemachines
 		kv.lastApplied = lastApplied
 		kv.logNum = logNum
 		kv.config = config
 		kv.preconfig = preconfig
-		log.Printf("%v-%v statemachine decode:%v\nconfig: %v preconfig: %v",kv.gid, kv.me, statemachines, kv.config.Num,kv.preconfig.Num)
+		DPrintf("%v-%v statemachine decode:%v\nconfig: %v preconfig: %v",kv.gid, kv.me, statemachines, kv.config.Num,kv.preconfig.Num)
 	}
 }
 func (kv *ShardKV) Submit(op Op) (Err, int, string) { 
@@ -134,7 +143,7 @@ func (kv *ShardKV) Submit(op Op) (Err, int, string) {
 	
 	kv.waitCh[index] = ch
 	kv.mu.Unlock()
-	log.Printf("%v-%v submit %v on index %v", kv.gid, kv.me, op, index)
+	DPrintf("%v-%v submit %v on index %v", kv.gid, kv.me, op, index)
 	defer func() {
 		kv.mu.Lock()
 		delete(kv.waitCh, index)
@@ -145,7 +154,7 @@ func (kv *ShardKV) Submit(op Op) (Err, int, string) {
 	}
 	select {
 	case committedOp := <-ch:
-		log.Printf("%v-%v recieved reply on index %v with %v", kv.gid, kv.me, index, committedOp)
+		DPrintf("%v-%v recieved reply on index %v with %v", kv.gid, kv.me, index, committedOp)
 		if committedOp.SeqNum == op.SeqNum {
 			return committedOp.Err, committedOp.LeaderId, committedOp.Value 
 		} else {
@@ -193,7 +202,7 @@ func (kv *ShardKV) CheckConfig(shard int, version int) bool{
 }
 func (kv *ShardKV) PullData(args *PullDataArgs, reply *PullDataReply) {
 
-	log.Printf("[Server.pulldata]%v-%v recieve args:%v, current config is %v",kv.gid,kv.me,args,kv.config.Num)
+	DPrintf("[Server.pulldata]%v-%v recieve args:%v, current config is %v",kv.gid,kv.me,args,kv.config.Num)
 	if kv.CheckConfig(args.Shard, args.Version) {
 		kv.mu.Lock()
 		reply.Data = kv.EncodeSSM(kv.stateMachines[args.Shard])
@@ -204,7 +213,7 @@ func (kv *ShardKV) PullData(args *PullDataArgs, reply *PullDataReply) {
 	}
 }
 func (kv *ShardKV) EraseData(args *EraseDataArgs, reply *EraseDataReply) {
-	log.Printf("[Server.erasedata]%v-%v recieve args:%v, current config is %v",kv.gid,kv.me,args,kv.config.Num)
+	DPrintf("[Server.erasedata]%v-%v recieve args:%v, current config is %v",kv.gid,kv.me,args,kv.config.Num)
 	kv.mu.Lock()
 	op := Op {
 		Operation:   EraseOp,
@@ -219,13 +228,12 @@ func (kv *ShardKV) EraseData(args *EraseDataArgs, reply *EraseDataReply) {
 
 func (kv *ShardKV) applier() {
 	for !kv.killed() {
-		log.Printf("[Server.applier]%v-%v is waiting for msg.",kv.gid, kv.me)
+		DPrintf("[Server.applier]%v-%v is waiting for msg.",kv.gid, kv.me)
 		select {
 		case msg := <- kv.applyCh:
-			// log.Printf("%v-%v recieve msg %v from raft", kv.gid,kv.me, msg)
-			// if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
-			// 	kv.Snapshot()
-			// }
+			// DPrintf("%v-%v recieve msg %v from raft", kv.gid,kv.me, msg)
+			log.Printf("[Server.size]%v-%v now log size is %v, maxraftstate is %v", kv.gid, kv.me, kv.persister.RaftStateSize(), kv.maxraftstate)
+			
 			if msg.CommandValid {
 				kv.mu.Lock()
 				op := msg.Command.(Op)
@@ -235,33 +243,33 @@ func (kv *ShardKV) applier() {
 					ClientId: 		op.ClientId,
 				}
 				lastSeq, flag := kv.stateMachines[op.Shard].ClientReq[op.ClientId]
-				if !flag || op.SeqNum > lastSeq {
+				if !flag || op.SeqNum > lastSeq.SeqNum {
 					switch op.Operation {
 					case PutOp:
-						log.Printf("[Server.Update]%v-%v trying to put %v to key %v on shard %v",kv.gid,kv.me, op.Value ,op.Key, op.Shard)
+						DPrintf("[Server.Update]%v-%v trying to put %v to key %v on shard %v",kv.gid,kv.me, op.Value ,op.Key, op.Shard)
 						if kv.stateMachines[op.Shard].State == Serving {
 							kv.stateMachines[op.Shard].Data[op.Key] = op.Value
 						} else {
 							result.Err = ErrWrongGroup
 						}
 					case AppendOp:
-						log.Printf("[Server.Append]%v-%v trying to append %v to key %v on shard %v client:%v seqnum:%v",kv.gid,kv.me, op.Value ,op.Key, op.Shard, op.ClientId, op.SeqNum)
+						DPrintf("[Server.Append]%v-%v trying to append %v to key %v on shard %v client:%v seqnum:%v",kv.gid,kv.me, op.Value ,op.Key, op.Shard, op.ClientId, op.SeqNum)
 						if kv.stateMachines[op.Shard].State == Serving {
 							kv.stateMachines[op.Shard].Data[op.Key] += op.Value
 						} else {
 							result.Err = ErrWrongGroup
 						}
 					case GetOp:
-						log.Printf("[Server.Get]%v-%v trying to get %v on shard %v",kv.gid,kv.me, op.Key, op.Shard)
+						DPrintf("[Server.Get]%v-%v trying to get %v on shard %v",kv.gid,kv.me, op.Key, op.Shard)
 						if kv.stateMachines[op.Shard].State == Serving {
 							result.Value = kv.stateMachines[op.Shard].Data[op.Key]
-							log.Printf("Value get on %v-%v is %v", kv.gid, kv.me, result.Value)
+							DPrintf("Value get on %v-%v is %v", kv.gid, kv.me, result.Value)
 						} else {
-							log.Printf("%v-%v Assign err.",kv.gid,kv.me)
+							DPrintf("%v-%v Assign err.",kv.gid,kv.me)
 							result.Err = ErrWrongGroup
 						}
 					case UpdateOp:
-						log.Printf("[Server.Update]%v-%v trying to update from config %v\n to new config %v\n",kv.gid,kv.me,op.PreConfig.Num,op.Config.Num)
+						DPrintf("[Server.Update]%v-%v trying to update from config %v\n to new config %v\n",kv.gid,kv.me,op.PreConfig.Num,op.Config.Num)
 						if op.Version <= kv.logNum {
 							result.Err = ErrWrongConfig
 						} else {
@@ -279,14 +287,14 @@ func (kv *ShardKV) applier() {
 										kv.stateMachines[shard].State = Offline
 									}
 								}
-								log.Printf("%v-%v shard %v state is %v", kv.gid, kv.me, shard, kv.stateMachines[shard].State)
+								DPrintf("%v-%v shard %v state is %v", kv.gid, kv.me, shard, kv.stateMachines[shard].State)
 							}
 							kv.logNum = op.Version
 							kv.config = op.Config
 							kv.preconfig = op.PreConfig
 						}
 					case ActivateOp:
-						log.Printf("[Server.Activate]%v-%v trying to activate shard %v",kv.gid,kv.me, op.Shard)
+						DPrintf("[Server.Activate]%v-%v trying to activate shard %v",kv.gid,kv.me, op.Shard)
 						if op.Version != kv.logNum || kv.stateMachines[op.Shard].State != Pulling{
 							result.Err = ErrWrongConfig
 						} else {
@@ -294,14 +302,16 @@ func (kv *ShardKV) applier() {
 							kv.stateMachines[op.Shard].State = Waiting
 						}
 					case EraseOp:
-						log.Printf("[Server.Erase]%v-%v trying to erase shard %v",kv.gid,kv.me, op.Shard)
+						DPrintf("[Server.Erase]%v-%v trying to erase shard %v",kv.gid,kv.me, op.Shard)
 						if op.Version != kv.logNum || kv.stateMachines[op.Shard].State != Erasing{
 							result.Err = ErrWrongConfig
 						} else {
-							kv.stateMachines[op.Shard].State = Offline
+							kv.stateMachines[op.Shard].Data = make(map[string]string) // Clear the data
+							kv.stateMachines[op.Shard].State = Offline // Retain the state as Offline
+							kv.stateMachines[op.Shard].ClientReq = make(map[int64]RequestReply)
 						}
 					case OnlineOp:
-						log.Printf("[Server.Online]%v-%v trying to onserving shard %v",kv.gid,kv.me, op.Shard)
+						DPrintf("[Server.Online]%v-%v trying to onserving shard %v",kv.gid,kv.me, op.Shard)
 						if op.Version != kv.logNum || kv.stateMachines[op.Shard].State != Waiting{
 							result.Err = ErrWrongConfig
 						} else {
@@ -309,18 +319,24 @@ func (kv *ShardKV) applier() {
 						}
 					}
 					if op.Operation != UpdateOp {
-						log.Printf("[Server.state]%v-%v serves %v config %v :%v",kv.gid, kv.me ,op.Shard, kv.logNum, kv.stateMachines[op.Shard])
+						DPrintf("[Server.state]%v-%v serves %v config %v :%v",kv.gid, kv.me ,op.Shard, kv.logNum, kv.stateMachines[op.Shard])
 					}
 					if result.Err != ErrWrongGroup {
-						kv.stateMachines[op.Shard].ClientReq[op.ClientId] = op.SeqNum
+						kv.stateMachines[op.Shard].ClientReq[op.ClientId] = RequestReply {
+							SeqNum: op.SeqNum,
+							Value: result.Value,
+						}
 					}
 				}else if op.Operation ==  GetOp {
-					log.Printf("[Server.Get]%v-%v trying to duplicate get %v on shard %v",kv.gid,kv.me, op.Key, op.Shard)
+					DPrintf("[Server.Get]%v-%v trying to duplicate get %v on shard %v",kv.gid,kv.me, op.Key, op.Shard)
 					if kv.stateMachines[op.Shard].State == Serving {
-						result.Value = kv.stateMachines[op.Shard].Data[op.Key]
-						log.Printf("Value get on %v-%v is %v", kv.gid, kv.me, result.Value)
+						result.Value = lastSeq.Value
+						if result.Value != kv.stateMachines[op.Shard].Data[op.Key] {
+							DPrintf("[Server.risk] %v-%v potential risk in linearizibility, %v-%v",kv.gid, kv.me, result.Value, kv.stateMachines[op.Shard].Data[op.Key])
+						}
+						DPrintf("Value get on %v-%v is %v", kv.gid, kv.me, result.Value)
 					} else {
-						log.Printf("%v-%v Assign err.",kv.gid,kv.me)
+						DPrintf("%v-%v Assign err.",kv.gid,kv.me)
 						result.Err = ErrWrongGroup
 					}
 				}
@@ -328,16 +344,19 @@ func (kv *ShardKV) applier() {
 					kv.lastApplied = msg.CommandIndex 
 				}
 				ch, ok := kv.waitCh[msg.CommandIndex]
-				log.Printf("%v-%v sendback %v %v %v index %v result %v ok:%v",kv.gid, kv.me, op.Operation, op.Key, op.Value, msg.CommandIndex,result, ok)
+				DPrintf("%v-%v sendback %v %v %v index %v result %v ok:%v",kv.gid, kv.me, op.Operation, op.Key, op.Value, msg.CommandIndex,result, ok)
 				if ok {
 					ch <- result 
 				}
 				kv.mu.Unlock()
 			}
 			if msg.SnapshotValid {
-				log.Printf("%v-%v install snapshot",kv.gid, kv.me)
+				DPrintf("%v-%v install snapshot",kv.gid, kv.me)
 				kv.InstallSnapshot(msg.Snapshot)
 				continue
+			}
+			if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate{
+				kv.Snapshot()
 			}
 		}
 	}
@@ -347,14 +366,14 @@ func (kv *ShardKV) applier() {
 func (kv *ShardKV) canupdate() bool {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	log.Printf("[Server]%d-%d in config %v-%v is checking", kv.gid, kv.me, kv.logNum, kv.config)
+	DPrintf("[Server]%d-%d in config %v-%v is checking", kv.gid, kv.me, kv.logNum, kv.config)
 
 	// Print all state machines' states in a single line
 	stateLine := fmt.Sprintf("[Server]%d-%d Shard states: ",kv.gid, kv.me)
 	for shard := 0; shard < 10; shard++ {
 		stateLine += fmt.Sprintf("Shard %d: %v; ", shard, kv.stateMachines[shard].State)
 	}
-	log.Printf(stateLine)
+	DPrintf(stateLine)
 
 	for shard := 0; shard < 10; shard++ {
 		if kv.stateMachines[shard].State != Serving && kv.stateMachines[shard].State != Offline {
@@ -391,7 +410,7 @@ func (kv *ShardKV) controler() {
 
 		if kv.canupdate() {
 			config := kv.sm.Query(kv.logNum + 1)
-			// log.Printf("%v-%v get config %v",kv.gid, kv.me, config)
+			// DPrintf("%v-%v get config %v",kv.gid, kv.me, config)
 			if config.Num == kv.logNum + 1 {
 				kv.mu.Lock()
 				subOp := Op{
@@ -403,9 +422,9 @@ func (kv *ShardKV) controler() {
 					SeqNum:			config.Num , 		
 				}
 				kv.mu.Unlock()
-				log.Printf("[Server]%v-%v submit a update request. %v",kv.gid, kv.me,subOp)
+				DPrintf("[Server]%v-%v submit a update request. %v",kv.gid, kv.me,subOp)
 				ok,_,_ := kv.Submit(subOp)
-				log.Printf("[Server]%v-%v recieve err %v after sent update request",kv.gid, kv.me, ok)				
+				DPrintf("[Server]%v-%v recieve err %v after sent update request",kv.gid, kv.me, ok)				
 			}
 		}
 	}
@@ -417,15 +436,15 @@ func (kv *ShardKV) datapuller() {
 		if !isleader {
 			continue
 		}
-		log.Printf("%v-%v is trying to pull data",kv.gid,kv.me)
+		DPrintf("%v-%v is trying to pull data",kv.gid,kv.me)
 		for shard := 0; shard < 10; shard ++ {
 			if kv.canpull(shard) {
 				gid := kv.preconfig.Shards[shard]
-				log.Printf("%v-%v Go %v pull %v data",kv.gid,kv.me,gid,shard)
+				DPrintf("%v-%v Go %v pull %v data",kv.gid,kv.me,gid,shard)
 				if servers, ok := kv.preconfig.Groups[gid]; ok {
-					log.Printf("%v-%v get server %v",kv.gid, kv.me, servers)
+					DPrintf("%v-%v get server %v",kv.gid, kv.me, servers)
 					for si := 0; si < len(servers); si++ {
-						log.Printf("%v-%v trying pull from %v",kv.gid, kv.me, si)
+						DPrintf("%v-%v trying pull from %v",kv.gid, kv.me, si)
 						srv := kv.make_end(servers[si])
 						var reply PullDataReply 
 						args := PullDataArgs{
@@ -433,7 +452,7 @@ func (kv *ShardKV) datapuller() {
 							Shard: 		shard,
 						}
 						ok := srv.Call("ShardKV.PullData", &args, &reply)
-						log.Printf("%v-%v recieve %v in datapuller from %v",kv.gid,kv.me,reply,servers[si])
+						DPrintf("%v-%v recieve %v in datapuller from %v",kv.gid,kv.me,reply,servers[si])
 						if ok && reply.Err == OK {
 							kv.mu.Lock()
 							subOp := Op{
@@ -466,11 +485,11 @@ func (kv *ShardKV) dataeraser() {
 		for shard := 0; shard < 10; shard ++ {
 			if kv.canerase(shard) {
 				gid := kv.preconfig.Shards[shard]
-				log.Printf("%v-%v Go %v erase %v data",kv.gid,kv.me,gid,shard)
+				DPrintf("%v-%v Go %v erase %v data",kv.gid,kv.me,gid,shard)
 				if servers, ok := kv.preconfig.Groups[gid]; ok {
-					log.Printf("%v-%v get server %v",kv.gid, kv.me, servers)
+					DPrintf("%v-%v get server %v",kv.gid, kv.me, servers)
 					for si := 0; si < len(servers); si++ {
-						log.Printf("%v-%v trying go erase %v",kv.gid, kv.me, si)
+						DPrintf("%v-%v trying go erase %v",kv.gid, kv.me, si)
 						srv := kv.make_end(servers[si])
 						var reply EraseDataReply
 						args := EraseDataArgs {
@@ -478,7 +497,7 @@ func (kv *ShardKV) dataeraser() {
 							Shard: 			shard,
 						}
 						ok := srv.Call("ShardKV.EraseData", &args, &reply)
-						log.Printf("%v-%v recieve %v in dataeraser from %v",kv.gid,kv.me,reply,servers[si])
+						DPrintf("%v-%v recieve %v in dataeraser from %v",kv.gid,kv.me,reply,servers[si])
 						
 						if ok && reply.Err == OK {
 							kv.mu.Lock()
@@ -508,7 +527,7 @@ func (kv *ShardKV) dataeraser() {
 // turn off debug output from this instance.
 func (kv *ShardKV) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
-	log.Printf("%v-%v killed.",kv.gid,kv.me)
+	DPrintf("%v-%v killed.",kv.gid,kv.me)
 	kv.rf.Kill()
 	// Your code here, if desired.
 }
@@ -567,7 +586,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 		kv.stateMachines[i] = ShardStateMachine{
 			Data:    make(map[string]string),
 			State:   Offline,
-			ClientReq: make(map[int64]int),
+			ClientReq: make(map[int64]RequestReply),
 		}
 	}
 	kv.config = kv.sm.Query(0)
@@ -577,9 +596,9 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.persister = persister
 	kv.InstallSnapshot(persister.ReadSnapshot())
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-	log.Printf("%v-%v restarted. in config %v",kv.gid,kv.me,kv.config)
+	DPrintf("%v-%v restarted. in config %v",kv.gid,kv.me,kv.config)
 	for shard := 0; shard < 10; shard ++ {
-		log.Printf("%v-%v shard %v state %v",kv.gid, kv.me, shard, kv.stateMachines[shard].State)
+		DPrintf("%v-%v shard %v state %v",kv.gid, kv.me, shard, kv.stateMachines[shard].State)
 	}
 	go kv.applier()
 	go kv.controler()

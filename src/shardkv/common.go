@@ -39,11 +39,15 @@ const (
 	Waiting        	ShardState = 3
 	Erasing 		ShardState = 4
 )
+type RequestReply struct {
+	SeqNum 		int
+	Value 		string
+}
 
 type ShardStateMachine struct {
 	State 		ShardState
 	Data		map[string]string
-	ClientReq	map[int64]int
+	ClientReq	map[int64]RequestReply
 }
 
 // Put or Append
