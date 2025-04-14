@@ -34,9 +34,11 @@ func nrand() int64 {
 }
 
 type Clerk struct {
-	sm       *shardctrler.Clerk
-	config   shardctrler.Config
-	make_end func(string) *labrpc.ClientEnd
+	sm       	*shardctrler.Clerk
+	config   	shardctrler.Config
+	make_end 	func(string) *labrpc.ClientEnd
+	clientId 	int64
+	seqNum 		int
 	// You will have to modify this struct.
 }
 
@@ -51,6 +53,8 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck := new(Clerk)
 	ck.sm = shardctrler.MakeClerk(ctrlers)
 	ck.make_end = make_end
+	ck.clientId = nrand()
+	ck.seqNum = 0
 	// You'll have to add code here.
 	return ck
 }
@@ -60,8 +64,12 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 // keeps trying forever in the face of all other errors.
 // You will have to modify this function.
 func (ck *Clerk) Get(key string) string {
-	args := GetArgs{}
-	args.Key = key
+	ck.seqNum ++
+	args := GetArgs{
+		Key: 		key,
+		ClientId: 	ck.clientId,
+		SeqNum:		ck.seqNum,
+	}
 
 	for {
 		shard := key2shard(key)
@@ -71,7 +79,9 @@ func (ck *Clerk) Get(key string) string {
 			for si := 0; si < len(servers); si++ {
 				srv := ck.make_end(servers[si])
 				var reply GetReply
+				DPrintf("[Client]%v-%v begin to get %v value target:%v-%v",ck.clientId, ck.seqNum, key,gid, si)
 				ok := srv.Call("ShardKV.Get", &args, &reply)
+				DPrintf("[Client]%v-%v get %v value, reply :%v-%v target:%v-%v",ck.clientId, ck.seqNum, key, ok,reply,gid, si)
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
 					return reply.Value
 				}
@@ -91,13 +101,15 @@ func (ck *Clerk) Get(key string) string {
 
 // shared by Put and Append.
 // You will have to modify this function.
-func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := PutAppendArgs{}
-	args.Key = key
-	args.Value = value
-	args.Op = op
-
-
+func (ck *Clerk) PutAppend(key string, value string, op OpType) {
+	ck.seqNum ++
+	args := PutAppendArgs{
+		Key: 		key,
+		Value:		value,
+		Op:			op,
+		ClientId: 	ck.clientId,
+		SeqNum:		ck.seqNum,
+	}
 	for {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
@@ -105,7 +117,9 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			for si := 0; si < len(servers); si++ {
 				srv := ck.make_end(servers[si])
 				var reply PutAppendReply
+				DPrintf("[Client]%v-%v begin to put/append %v on %v target:%v-%v",ck.clientId, ck.seqNum, value, key, gid, si)
 				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
+				DPrintf("[Client]%v-%v put/append %v on %v, reply :%v-%v target:%v-%v",ck.clientId, ck.seqNum, value, key, ok,reply, gid, si)
 				if ok && reply.Err == OK {
 					return
 				}
@@ -122,8 +136,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 }
 
 func (ck *Clerk) Put(key string, value string) {
-	ck.PutAppend(key, value, "Put")
+	ck.PutAppend(key, value, PutOp)
 }
 func (ck *Clerk) Append(key string, value string) {
-	ck.PutAppend(key, value, "Append")
+	ck.PutAppend(key, value, AppendOp)
 }

@@ -115,7 +115,7 @@ func TestJoinLeave(t *testing.T) {
 	}
 
 	cfg.join(1)
-
+	fmt.Printf("join new gid.\n")
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])
 		x := randstring(5)
@@ -124,7 +124,7 @@ func TestJoinLeave(t *testing.T) {
 	}
 
 	cfg.leave(0)
-
+	fmt.Printf("leave old gid.\n")
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])
 		x := randstring(5)

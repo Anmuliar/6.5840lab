@@ -44,12 +44,9 @@ type OpResult struct {
 func (sc *ShardCtrler) Submit(op Op) (Err, int, Config) {
 
 	// log.Printf("Submitting op %v",op)
-	index, _, isLeader := sc.rf.Start(op)
-	if !isLeader {
-		return ErrWrongLeader, -1, Config{}
-	}
 	ch := make(chan OpResult, 1)
 	sc.mu.Lock()
+	index, _, isLeader := sc.rf.Start(op)
 	sc.waitCh[index] = ch
 	sc.mu.Unlock()
 	defer func() {
@@ -57,6 +54,10 @@ func (sc *ShardCtrler) Submit(op Op) (Err, int, Config) {
 		delete(sc.waitCh, index)
 		sc.mu.Unlock()
 	}()
+	
+	if !isLeader {
+		return ErrWrongLeader, -1, Config{}
+	}
 	select {
 	case committedOp := <- ch:
 		if committedOp.SeqNum == op.SeqNum {
@@ -199,10 +200,16 @@ func (sc *ShardCtrler) applier() {
 						if op.Int1 > len(sc.configs) {
 							result.Err = ErrNoKey
 						}
-						
-						result.Value = sc.configs[(op.Int1 + len(sc.configs)) % len(sc.configs)]
+						if op.Int1 + len(sc.configs) < 0 {
+							result.Value = Config{
+								Num: 		0,
+								Groups:		map[int][]string{},
+							}
+						} else {
+							result.Value = sc.configs[(op.Int1 + len(sc.configs)) % len(sc.configs)]
 						// log.Printf("In server %v: the No.%v config before balance is %v", sc.me, op.Int1, result.Value)
-						result.Value.ShardBalance()
+							result.Value.ShardBalance()
+						}
 						// log.Printf("In server %v: the No.%v config after balance is %v", sc.me, op.Int1, result.Value)
 					}
 				}
